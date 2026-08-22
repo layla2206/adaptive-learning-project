@@ -29,6 +29,8 @@ data/         Quiz content, sample data, schema notes
 3. `docs/team-roles.md` — proposed role split for the 5-person team
 4. `docs/environment-setup.md` — how to get a dev environment running
 5. `docs/interview-guide.md` — Empathize-phase interview guide (students + instructors)
+6. `docs/github-setup.md` — how to push this repo to GitHub and add collaborators
+7. `docs/interview-synthesis-instructors.md` — synthesis of round 1 instructor interview responses
 
 ## Next steps
 
