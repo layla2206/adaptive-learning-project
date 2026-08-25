@@ -3,7 +3,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 1. instructors
 CREATE TABLE instructors (
-    instructor_id VARCHAR(10) PRIMARY KEY,
+    instructor_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -13,7 +13,7 @@ CREATE TABLE instructors (
 CREATE TABLE courses (
     course_id VARCHAR(10) PRIMARY KEY,
     course_name VARCHAR(100) NOT NULL,
-    instructor_id VARCHAR(10) NOT NULL,
+    instructor_id UUID NOT NULL,
     FOREIGN KEY (instructor_id) REFERENCES instructors(instructor_id)
 );
 
@@ -29,7 +29,7 @@ CREATE TABLE topics (
 -- 4. documents
 CREATE TABLE documents (
     document_id VARCHAR(10) PRIMARY KEY,
-    instructor_id VARCHAR(10) NOT NULL,
+    instructor_id UUID NOT NULL,
     course_id VARCHAR(10) NOT NULL,
     topic_id VARCHAR(10),
     file_name VARCHAR(255) NOT NULL,
@@ -54,7 +54,7 @@ CREATE TABLE chunks (
 
 -- 6. students
 CREATE TABLE students (
-    student_id VARCHAR(10) PRIMARY KEY,
+    student_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -63,7 +63,7 @@ CREATE TABLE students (
 -- 7. enrollments (student <-> course)
 CREATE TABLE enrollments (
     enrollment_id VARCHAR(10) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     course_id VARCHAR(10) NOT NULL,
     enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (student_id) REFERENCES students(student_id),
@@ -73,7 +73,7 @@ CREATE TABLE enrollments (
 
 -- 8. student_profiles (per topic)
 CREATE TABLE student_profiles (
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10) NOT NULL,
     level VARCHAR(20), -- Beginner / Intermediate / Advanced
     mastery_percent DECIMAL(5,2) DEFAULT 0,
@@ -99,7 +99,7 @@ CREATE TABLE diagnostic_questions (
 -- 10. diagnostic_results
 CREATE TABLE diagnostic_results (
     result_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     question_id VARCHAR(10) NOT NULL,
     student_answer TEXT,
     is_correct BOOLEAN,
@@ -111,7 +111,7 @@ CREATE TABLE diagnostic_results (
 -- 11. sessions (conversation memory)
 CREATE TABLE sessions (
     session_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10),
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (student_id) REFERENCES students(student_id),
@@ -131,7 +131,7 @@ CREATE TABLE session_messages (
 -- 13. student_answers (mastery-check attempts)
 CREATE TABLE student_answers (
     answer_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10) NOT NULL,
     session_id VARCHAR(15),
     question_text TEXT,
@@ -156,7 +156,7 @@ CREATE TABLE answer_citations (
 -- 15. mastery_checks
 CREATE TABLE mastery_checks (
     mastery_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10) NOT NULL,
     attempt_number INT NOT NULL,
     explain_score DECIMAL(5,2),
@@ -171,7 +171,7 @@ CREATE TABLE mastery_checks (
 -- 16. retry_attempts (RE-EXPLAIN ATTEMPTS)
 CREATE TABLE retry_attempts (
     retry_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10) NOT NULL,
     attempt_number INT NOT NULL,
     format_used VARCHAR(50) NOT NULL, -- 'Worked Example' | 'Hands-on Task' | etc.

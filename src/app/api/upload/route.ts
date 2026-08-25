@@ -8,7 +8,7 @@ export async function POST(req: NextRequest) {
     const file = formData.get("file") as File | null;
     const courseId = (formData.get("courseId") as string) || "cs201";
     const topicId = (formData.get("topicId") as string) || null;
-    const instructorId = (formData.get("instructorId") as string) || "inst-1";
+    const instructorId = (formData.get("instructorId") as string) || "550e8400-e29b-41d4-a716-446655440000";
 
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });

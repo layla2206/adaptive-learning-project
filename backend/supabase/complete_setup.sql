@@ -7,7 +7,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 1. instructors
 CREATE TABLE IF NOT EXISTS instructors (
-    instructor_id VARCHAR(10) PRIMARY KEY,
+    instructor_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS instructors (
 CREATE TABLE IF NOT EXISTS courses (
     course_id VARCHAR(10) PRIMARY KEY,
     course_name VARCHAR(100) NOT NULL,
-    instructor_id VARCHAR(10) NOT NULL,
+    instructor_id UUID NOT NULL,
     FOREIGN KEY (instructor_id) REFERENCES instructors(instructor_id)
 );
 
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS topics (
 -- 4. documents
 CREATE TABLE IF NOT EXISTS documents (
     document_id VARCHAR(10) PRIMARY KEY,
-    instructor_id VARCHAR(10) NOT NULL,
+    instructor_id UUID NOT NULL,
     course_id VARCHAR(10) NOT NULL,
     topic_id VARCHAR(10),
     file_name VARCHAR(255) NOT NULL,
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 -- 6. students
 CREATE TABLE IF NOT EXISTS students (
-    student_id VARCHAR(10) PRIMARY KEY,
+    student_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS students (
 -- 7. enrollments (student <-> course)
 CREATE TABLE IF NOT EXISTS enrollments (
     enrollment_id VARCHAR(10) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     course_id VARCHAR(10) NOT NULL,
     enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (student_id) REFERENCES students(student_id),
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS enrollments (
 
 -- 8. student_profiles (per topic)
 CREATE TABLE IF NOT EXISTS student_profiles (
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10) NOT NULL,
     level VARCHAR(20), -- Beginner / Intermediate / Advanced
     mastery_percent DECIMAL(5,2) DEFAULT 0,
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS diagnostic_questions (
 -- 10. diagnostic_results
 CREATE TABLE IF NOT EXISTS diagnostic_results (
     result_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     question_id VARCHAR(10) NOT NULL,
     student_answer TEXT,
     is_correct BOOLEAN,
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS diagnostic_results (
 -- 11. sessions (conversation memory)
 CREATE TABLE IF NOT EXISTS sessions (
     session_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10),
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (student_id) REFERENCES students(student_id),
@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS session_messages (
 -- 13. student_answers (mastery-check attempts)
 CREATE TABLE IF NOT EXISTS student_answers (
     answer_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10) NOT NULL,
     session_id VARCHAR(15),
     question_text TEXT,
@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS answer_citations (
 -- 15. mastery_checks
 CREATE TABLE IF NOT EXISTS mastery_checks (
     mastery_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10) NOT NULL,
     attempt_number INT NOT NULL,
     explain_score DECIMAL(5,2),
@@ -175,7 +175,7 @@ CREATE TABLE IF NOT EXISTS mastery_checks (
 -- 16. retry_attempts (RE-EXPLAIN ATTEMPTS)
 CREATE TABLE IF NOT EXISTS retry_attempts (
     retry_id VARCHAR(15) PRIMARY KEY,
-    student_id VARCHAR(10) NOT NULL,
+    student_id UUID NOT NULL,
     topic_id VARCHAR(10) NOT NULL,
     attempt_number INT NOT NULL,
     format_used VARCHAR(50) NOT NULL,
@@ -189,17 +189,17 @@ CREATE TABLE IF NOT EXISTS retry_attempts (
 -- SEED DATA
 -- ========================================================================
 
--- Demo Instructor
+-- Demo Instructor (Using specific UUID so foreign keys work reliably)
 INSERT INTO instructors (instructor_id, name, email) 
-VALUES ('inst-1', 'Dr. Elena Marsh', 'elena.marsh@example.edu')
+VALUES ('550e8400-e29b-41d4-a716-446655440000', 'Dr. Elena Marsh', 'elena.marsh@example.edu')
 ON CONFLICT (instructor_id) DO NOTHING;
 
 -- Demo Courses
 INSERT INTO courses (course_id, course_name, instructor_id) VALUES
-('cs201', 'Data Structures & Algorithms', 'inst-1'),
-('math210', 'Calculus II', 'inst-1'),
-('math240', 'Linear Algebra', 'inst-1'),
-('chem150', 'Organic Chemistry I', 'inst-1')
+('cs201', 'Data Structures & Algorithms', '550e8400-e29b-41d4-a716-446655440000'),
+('math210', 'Calculus II', '550e8400-e29b-41d4-a716-446655440000'),
+('math240', 'Linear Algebra', '550e8400-e29b-41d4-a716-446655440000'),
+('chem150', 'Organic Chemistry I', '550e8400-e29b-41d4-a716-446655440000')
 ON CONFLICT (course_id) DO NOTHING;
 
 -- Demo Topics
