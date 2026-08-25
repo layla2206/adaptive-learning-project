@@ -10,8 +10,6 @@ import styles from "./page.module.css";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".pptx"];
 const MAX_SIZE_BYTES = 25 * 1024 * 1024;
-const UPLOAD_TICK_MS = 180;
-const PROCESSING_MS = 2000;
 const TOAST_MS = 3000;
 
 let fileIdSeq = 0;
@@ -48,6 +46,8 @@ export default function CourseUploadPage() {
   const [retagLecture, setRetagLecture] = useState("");
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [fileMap, setFileMap] = useState<Map<string, File>>(new Map());
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -68,33 +68,51 @@ export default function CourseUploadPage() {
     toastTimerRef.current = setTimeout(() => setToast(null), TOAST_MS);
   }
 
-  function runUpload(id: string, forceSuccess: boolean) {
-    function tick(current: number) {
-      if (current >= 100) {
-        // Simulated transient network failures — retrying always succeeds, mirroring how
-        // most "upload interrupted" errors resolve on a second attempt.
-        const failed = !forceSuccess && Math.random() < 0.3;
-        setFiles((prev) =>
-          prev.map((f) =>
-            f.id === id
-              ? failed
-                ? { ...f, status: "failed", progress: 100, errorReason: "Upload interrupted — try again." }
-                : { ...f, status: "tagging", progress: 100 }
-              : f
-          )
-        );
-        return;
+  async function uploadToR2(id: string, fileObj: File) {
+    try {
+      // Simulate incremental progress UI while upload is starting
+      setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, progress: 35 } : f)));
+
+      const formData = new FormData();
+      formData.append("file", fileObj);
+      formData.append("courseId", params.courseId);
+      formData.append("instructorId", "inst-1");
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Upload failed with status ${response.status}`);
       }
-      const next = Math.min(100, current + 10 + Math.random() * 15);
-      setFiles((prev) => prev.map((f) => (f.id === id && f.status === "uploading" ? { ...f, progress: next } : f)));
-      setTimeout(() => tick(next), UPLOAD_TICK_MS);
+
+      const result = await response.json();
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === id
+            ? { ...f, status: "tagging", progress: 100 }
+            : f
+        )
+      );
+    } catch (err: any) {
+      console.error("Upload error:", err);
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === id
+            ? { ...f, status: "failed", progress: 100, errorReason: err.message || "Upload failed — try again." }
+            : f
+        )
+      );
     }
-    setTimeout(() => tick(0), UPLOAD_TICK_MS);
   }
 
   function handleFilesPicked(list: FileList | null) {
     if (!list || list.length === 0) return;
     const rejected: string[] = [];
+    const newFileMap = new Map(fileMap);
+
     Array.from(list).forEach((file) => {
       const error = validateFile(file);
       if (error) {
@@ -102,15 +120,23 @@ export default function CourseUploadPage() {
         return;
       }
       const id = nextFileId();
-      setFiles((prev) => [{ id, name: file.name, lectureNumber: 0, uploadedAt: todayLabel(), status: "uploading", progress: 0 }, ...prev]);
-      runUpload(id, false);
+      newFileMap.set(id, file);
+      setFiles((prev) => [
+        { id, name: file.name, lectureNumber: 0, uploadedAt: todayLabel(), status: "uploading", progress: 10 },
+        ...prev,
+      ]);
+      uploadToR2(id, file);
     });
+
+    setFileMap(newFileMap);
     setRejections(rejected);
   }
 
   function handleRetryUpload(id: string) {
-    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, status: "uploading", progress: 0, errorReason: undefined } : f)));
-    runUpload(id, true);
+    const fileObj = fileMap.get(id);
+    if (!fileObj) return;
+    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, status: "uploading", progress: 10, errorReason: undefined } : f)));
+    uploadToR2(id, fileObj);
   }
 
   function handleTagChange(id: string, value: string) {
@@ -121,16 +147,13 @@ export default function CourseUploadPage() {
     const value = taggingDraft[id];
     if (!value || !value.trim()) return;
     const fileName = files.find((f) => f.id === id)?.name ?? "File";
-    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, lectureNumber: Number(value), status: "processing" } : f)));
+    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, lectureNumber: Number(value), status: "ready" } : f)));
     setTaggingDraft((prev) => {
       const next = { ...prev };
       delete next[id];
       return next;
     });
-    setTimeout(() => {
-      setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, status: "ready" } : f)));
-      showToast(`${fileName} is ready`);
-    }, PROCESSING_MS);
+    showToast(`${fileName} saved for Lecture ${value}`);
   }
 
   function handleStartRetag(file: UploadedFile) {
@@ -175,7 +198,7 @@ export default function CourseUploadPage() {
         <div key={`${file.id}-${file.status}`} className={`${styles.rowContent} ${styles.rowTagging}`}>
           <div className={styles.rowMain}>
             <p className={styles.fileName}>{file.name}</p>
-            <p className={styles.taggingHint}>Uploaded — assign it to a lecture to save it.</p>
+            <p className={styles.taggingHint}>Uploaded to Cloudflare R2 — assign it to a lecture to complete.</p>
           </div>
           <div className={styles.tagInline}>
             <label className={styles.tagLabel} htmlFor={`lecture-${file.id}`}>
