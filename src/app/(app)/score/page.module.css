@@ -1,0 +1,12 @@
+.page {
+  padding: 48px 0 96px;
+}
+
+.section {
+  margin-bottom: 48px;
+}
+
+.section .sectionTitle {
+  font-size: 1.4rem;
+  margin: 10px 0 20px;
+}

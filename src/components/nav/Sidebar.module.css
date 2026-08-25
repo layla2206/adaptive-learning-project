@@ -1,0 +1,104 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 232px;
+  flex-shrink: 0;
+  min-height: 100vh;
+  background: var(--bg-card);
+  border-right: 1px solid var(--line);
+  padding: 24px 16px;
+  position: sticky;
+  top: 0;
+}
+
+.logo {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: -0.01em;
+  padding: 8px 12px 28px;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-soft);
+  border-left: 2px solid transparent;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.item:hover {
+  background: var(--bg-card-hover);
+  color: var(--ink);
+}
+
+.itemActive {
+  background: rgba(139, 58, 94, 0.08);
+  color: var(--plum);
+  border-left-color: var(--plum);
+}
+
+.itemActive:hover {
+  background: rgba(139, 58, 94, 0.1);
+  color: var(--plum);
+}
+
+.itemLabel {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.74rem;
+}
+
+.signOut {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-faint);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.signOut:hover {
+  background: var(--bg-card-hover);
+  color: var(--ink-soft);
+}
+
+@media (max-width: 860px) {
+  .sidebar {
+    width: 72px;
+    padding: 20px 12px;
+    align-items: center;
+  }
+
+  .logo {
+    padding: 8px 0 24px;
+    font-size: 0;
+  }
+
+  .logo::before {
+    content: "T";
+    font-size: 1.1rem;
+  }
+
+  .item,
+  .signOut {
+    justify-content: center;
+    padding: 12px;
+  }
+
+  .itemLabel {
+    display: none;
+  }
+}

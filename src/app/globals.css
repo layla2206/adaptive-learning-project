@@ -1,0 +1,109 @@
+:root {
+  --bg: #f6efe3;
+  --bg-card: #ffffff;
+  --bg-card-hover: #fbf7f0;
+  --ink: #241c1f;
+  --ink-soft: #665a5e;
+  --ink-faint: #a09195;
+  --line: #e9ddc8;
+  --plum: #8b3a5e;
+  --plum-deep: #6b2c48;
+  --flame: #ff6b4a;
+  --flame-soft: #3a241f;
+
+  --radius-lg: 20px;
+  --radius-sm: 12px;
+
+  --font-display: var(--font-space-grotesk), "Space Grotesk", sans-serif;
+  --font-body: var(--font-inter), "Inter", sans-serif;
+  --font-mono: var(--font-jbmono), "JetBrains Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+textarea,
+input {
+  font-family: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: var(--plum);
+  color: #fff;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.shell {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    padding: 0 20px;
+  }
+}

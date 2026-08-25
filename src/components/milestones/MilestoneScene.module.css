@@ -1,0 +1,25 @@
+.scene {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 20px 24px;
+  width: max-content;
+}
+
+.pathWrap {
+  flex-shrink: 0;
+}
+
+.palaceWrap {
+  flex-shrink: 0;
+  width: 190px;
+}

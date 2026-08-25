@@ -1,0 +1,102 @@
+.cabinet {
+  --gold: #f5c542;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  padding: 28px;
+}
+
+.shelf {
+  padding-bottom: 22px;
+  margin-bottom: 22px;
+}
+
+.shelfLabel {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+  margin-bottom: 14px;
+}
+
+.shelfRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.shelfDivider {
+  margin-top: 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.medallionWrap {
+  position: relative;
+  outline: none;
+}
+
+.medallion {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease;
+}
+
+.medallionWrap:hover .medallion,
+.medallionWrap:focus-visible .medallion {
+  transform: translateY(-2px);
+}
+
+.locked {
+  background: var(--bg);
+  border: 1.5px solid var(--line);
+  color: var(--ink-faint);
+}
+
+.unlocked {
+  background: radial-gradient(circle at 40% 35%, #fff3cf 0%, var(--gold) 55%, #c9922a 100%);
+  border: 1.5px solid var(--gold);
+  color: #6b4d13;
+  box-shadow: 0 0 16px rgba(245, 197, 66, 0.45);
+}
+
+.tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translate(-50%, 4px);
+  white-space: nowrap;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.65rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 1;
+}
+
+.medallionWrap:hover .tooltip,
+.medallionWrap:focus-visible .tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.footer {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  text-align: center;
+  padding-top: 4px;
+}

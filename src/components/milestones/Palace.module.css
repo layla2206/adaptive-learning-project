@@ -1,0 +1,92 @@
+.structure {
+  fill: var(--bg-card);
+  stroke: var(--ink-faint);
+  stroke-width: 2;
+}
+
+.structureLine {
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-width: 2;
+}
+
+.structureFacet {
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+  opacity: 0.7;
+}
+
+.windowLocked {
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-width: 1.5;
+}
+
+.windowLit {
+  stroke: none;
+}
+
+.ignitePop {
+  animation: ignitePop 0.85s ease-out;
+}
+
+@keyframes ignitePop {
+  0% {
+    transform: scale(0.5);
+  }
+  45% {
+    transform: scale(1.4);
+  }
+  70% {
+    transform: scale(0.92);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.igniteRing {
+  fill: none;
+  stroke-width: 2.5;
+  opacity: 0.9;
+  animation: igniteRingBurst 0.85s ease-out forwards;
+  transform-box: fill-box;
+}
+
+@keyframes igniteRingBurst {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(3.2);
+    opacity: 0;
+  }
+}
+
+/* Full-palace fanfare, played once when the last window lights the whole building —
+   a double ring burst radiating from the palace's center. */
+.fanfareRing,
+.fanfareRingDelayed {
+  fill: none;
+  stroke-width: 2;
+  opacity: 0.7;
+  transform-box: fill-box;
+  animation: fanfareRingBurst 1.1s ease-out forwards;
+}
+
+.fanfareRingDelayed {
+  animation-delay: 0.25s;
+}
+
+@keyframes fanfareRingBurst {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}

@@ -1,0 +1,74 @@
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 28px;
+  transition: transform 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+
+a.card {
+  cursor: pointer;
+}
+
+.card:hover {
+  transform: translateY(-3px);
+  background: var(--bg-card-hover);
+}
+
+.featured {
+  background: linear-gradient(160deg, var(--plum), var(--plum-deep));
+  border-color: transparent;
+  color: #fff;
+}
+
+.featured:hover {
+  background: linear-gradient(160deg, var(--plum), var(--plum-deep));
+  transform: translateY(-3px);
+  filter: brightness(1.04);
+}
+
+/* Amber "needs attention" variant — instructor-dashboard-only, never used alongside
+   .featured's plum on any student-facing screen, so it stays a scoped one-off rather
+   than a global token. */
+.flagged {
+  --amber: #d97706;
+  --amber-deep: #b45309;
+  background: linear-gradient(160deg, var(--amber), var(--amber-deep));
+  border-color: transparent;
+  color: #fff;
+}
+
+.flagged:hover {
+  background: linear-gradient(160deg, var(--amber), var(--amber-deep));
+  transform: translateY(-3px);
+  filter: brightness(1.04);
+}
+
+.dashed {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--line);
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--ink-faint);
+}
+
+.dashed:hover {
+  background: var(--bg-card);
+  color: var(--ink-soft);
+  border-color: var(--ink-faint);
+}
+
+.disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.disabled:hover {
+  transform: none;
+  background: var(--bg-card);
+}

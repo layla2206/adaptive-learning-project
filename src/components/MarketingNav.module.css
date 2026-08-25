@@ -1,0 +1,81 @@
+.nav {
+  border-bottom: 1px solid var(--line);
+  padding: 20px 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: -0.01em;
+}
+
+.right {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.personaLinks {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-right: 4px;
+}
+
+.personaLink {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.66rem;
+  color: var(--ink-faint);
+  transition: color 0.2s ease;
+}
+
+.personaLink:hover {
+  color: var(--ink-soft);
+}
+
+.signIn {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.72rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 18px;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.signIn:hover {
+  border-color: var(--plum);
+  background: rgba(139, 58, 94, 0.08);
+}
+
+.signUp {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.72rem;
+  border-radius: var(--radius-sm);
+  padding: 10px 18px;
+  background: var(--plum);
+  color: #fff;
+  transition: background-color 0.2s ease;
+}
+
+.signUp:hover {
+  background: var(--plum-deep);
+}
+
+@media (max-width: 560px) {
+  .personaLinks {
+    display: none;
+  }
+}

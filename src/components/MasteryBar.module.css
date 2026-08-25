@@ -1,0 +1,55 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.labelRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.label {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.66rem;
+  color: var(--ink-faint);
+}
+
+.value {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+.track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--plum);
+  transition: width 0.4s ease;
+}
+
+.labelInverted {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.valueInverted {
+  color: #fff;
+}
+
+.trackInverted {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.fillInverted {
+  background: #fff;
+}

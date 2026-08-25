@@ -1,0 +1,243 @@
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 40px 20px;
+}
+
+.card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 40px 36px;
+}
+
+.logo {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: -0.01em;
+  margin-bottom: 32px;
+}
+
+.progress {
+  margin-bottom: 28px;
+}
+
+.stepLabel {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.68rem;
+  color: var(--ink-faint);
+  margin-bottom: 10px;
+}
+
+.dots {
+  display: flex;
+  gap: 6px;
+}
+
+.dot {
+  width: 28px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.dotActive {
+  background: var(--plum);
+}
+
+.stepBody {
+  display: flex;
+  flex-direction: column;
+}
+
+.title {
+  font-size: 1.5rem;
+  margin-bottom: 8px;
+}
+
+.subtitle {
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  margin-bottom: 26px;
+}
+
+.subtitle strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.fieldLabel {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.66rem;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+
+.fieldLabel:not(:first-child) {
+  margin-top: 20px;
+}
+
+.input {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  padding: 13px 14px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.input:focus {
+  border-color: var(--plum);
+}
+
+.fieldError {
+  margin-top: 10px;
+  font-size: 0.84rem;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.primaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 26px;
+  padding: 14px 22px;
+  border-radius: var(--radius-sm);
+  background: var(--plum);
+  color: #fff;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.74rem;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.primaryButton:hover {
+  background: var(--plum-deep);
+  transform: translateY(-1px);
+}
+
+.primaryButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* OTP */
+.otpRow {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.otpBox {
+  width: 44px;
+  height: 52px;
+  text-align: center;
+  font-size: 1.2rem;
+  font-family: var(--font-mono);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.otpBox:focus {
+  border-color: var(--plum);
+}
+
+.resendButton {
+  align-self: flex-start;
+  margin-top: 20px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.7rem;
+  color: var(--plum);
+  transition: color 0.2s ease;
+}
+
+.resendButton:hover:not(:disabled) {
+  color: var(--plum-deep);
+}
+
+.resendButton:disabled {
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+
+/* Password strength */
+.strengthWrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.strengthTrack {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.strengthFill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.2s ease, background-color 0.2s ease;
+}
+
+.strengthFill.strength_weak {
+  width: 33%;
+  background: var(--ink-faint);
+}
+
+.strengthFill.strength_medium {
+  width: 66%;
+  background: var(--ink-soft);
+}
+
+.strengthFill.strength_strong {
+  width: 100%;
+  background: var(--plum);
+}
+
+.strengthLabel {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.64rem;
+  flex-shrink: 0;
+}
+
+.strengthLabel.strength_weak {
+  color: var(--ink-faint);
+}
+
+.strengthLabel.strength_medium {
+  color: var(--ink-soft);
+}
+
+.strengthLabel.strength_strong {
+  color: var(--plum);
+}

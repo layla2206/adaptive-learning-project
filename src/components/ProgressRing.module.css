@@ -1,0 +1,36 @@
+.wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.wrap svg {
+  transform: rotate(0deg);
+}
+
+.track {
+  stroke: var(--line);
+}
+
+.trackInverted {
+  stroke: rgba(255, 255, 255, 0.25);
+}
+
+.progress {
+  stroke: var(--plum);
+  transition: stroke-dashoffset 0.5s ease;
+}
+
+.progressInverted {
+  stroke: #ffffff;
+  transition: stroke-dashoffset 0.5s ease;
+}
+
+.label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-weight: 500;
+}

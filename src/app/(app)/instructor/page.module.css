@@ -1,0 +1,150 @@
+.page {
+  padding: 48px 0 96px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 32px;
+}
+
+.greeting {
+  font-size: 2rem;
+  margin-top: 10px;
+}
+
+.avatar {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.statsWrap {
+  margin-bottom: 48px;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.sectionHead h2 {
+  font-size: 1.3rem;
+}
+
+/* Quick actions */
+.actionsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  margin-bottom: 48px;
+}
+
+.actionCard {
+  gap: 16px;
+}
+
+.actionIcon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  color: var(--plum);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
+}
+
+.actionCard h3 {
+  font-size: 1.05rem;
+  margin-bottom: 6px;
+}
+
+.actionCard p {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.actionFoot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+/* Course grid */
+.courseGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  margin-bottom: 48px;
+}
+
+.courseCard {
+  min-height: 240px;
+  justify-content: space-between;
+}
+
+.ringWrap {
+  position: absolute;
+  top: 28px;
+  right: 28px;
+}
+
+.courseName {
+  font-size: 1.1rem;
+  margin-bottom: 6px;
+  padding-right: 70px;
+}
+
+.roster {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  margin-bottom: 18px;
+}
+
+.courseCard[data-flagged] .roster {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.barWrap {
+  margin-bottom: 16px;
+}
+
+.meta {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.68rem;
+  color: var(--ink-faint);
+  margin-bottom: 16px;
+}
+
+.courseCard[data-flagged] .meta {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.cardFoot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+@media (max-width: 780px) {
+  .actionsGrid,
+  .courseGrid {
+    grid-template-columns: 1fr;
+  }
+}
