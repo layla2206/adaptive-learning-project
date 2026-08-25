@@ -47,7 +47,7 @@ CREATE TABLE chunks (
     topic_id VARCHAR(10),
     page_number INT,
     chunk_text TEXT NOT NULL,
-    embedding vector(1536), -- adjust dimension to your embedding model
+    embedding vector(768), -- 768 dimensions for Google Gemini text-embedding-004
     FOREIGN KEY (document_id) REFERENCES documents(document_id),
     FOREIGN KEY (topic_id) REFERENCES topics(topic_id)
 );
