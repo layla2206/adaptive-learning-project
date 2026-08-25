@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { HomeIcon, CalendarIcon, GridIcon, ChartIcon, UsersIcon, LogoutIcon } from "@/components/icons";
 import type { ComponentType } from "react";
+import { roleForPath } from "@/lib/roleForPath";
+import { clearSession } from "@/lib/session";
 import styles from "./Sidebar.module.css";
 
 interface NavItem {
@@ -30,14 +32,9 @@ const ADMIN_ITEMS: NavItem[] = [
   { label: "Platform Stats", href: "/admin#stats", icon: ChartIcon, active: () => false },
 ];
 
-function roleForPath(pathname: string): "instructor" | "admin" | "student" {
-  if (pathname.startsWith("/instructor")) return "instructor";
-  if (pathname.startsWith("/admin")) return "admin";
-  return "student";
-}
-
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const role = roleForPath(pathname);
   const items = role === "instructor" ? INSTRUCTOR_ITEMS : role === "admin" ? ADMIN_ITEMS : STUDENT_ITEMS;
   const homeHref = role === "instructor" ? "/instructor" : role === "admin" ? "/admin" : "/dashboard";
@@ -65,10 +62,17 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <Link href="/" className={styles.signOut}>
+      <button
+        type="button"
+        className={styles.signOut}
+        onClick={() => {
+          clearSession();
+          router.push("/");
+        }}
+      >
         <LogoutIcon size={18} />
         <span className={styles.itemLabel}>Sign out</span>
-      </Link>
+      </button>
     </aside>
   );
 }

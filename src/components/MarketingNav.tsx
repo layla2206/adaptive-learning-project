@@ -16,7 +16,7 @@ export default function MarketingNav() {
                 Admin
               </Link>
             </div>
-            <Link href="/dashboard" className={styles.signIn}>
+            <Link href="/login" className={styles.signIn}>
               Sign in
             </Link>
             <Link href="/signup" className={styles.signUp}>

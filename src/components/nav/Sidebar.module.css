@@ -67,6 +67,11 @@
   padding: 11px 12px;
   border-radius: var(--radius-sm);
   color: var(--ink-faint);
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 

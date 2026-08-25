@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { roster, maskEmail, MOCK_OTP, type RosterEntry } from "@/lib/authData";
 import { ArrowIcon } from "@/components/icons";
+import { setSession } from "@/lib/session";
+import type { Role } from "@/lib/roleForPath";
 import styles from "./page.module.css";
 
 type Step = "id" | "otp" | "password";
@@ -15,8 +16,8 @@ const RESEND_COOLDOWN_S = 60;
 
 function passwordStrength(pw: string): "weak" | "medium" | "strong" | null {
   if (!pw) return null;
-  if (pw.length < 6) return "weak";
-  if (pw.length < 10) return "medium";
+  if (pw.length < 8) return "weak";
+  if (pw.length < 12) return "medium";
   return "strong";
 }
 
@@ -26,16 +27,21 @@ export default function SignupPage() {
 
   const [studentId, setStudentId] = useState("");
   const [idError, setIdError] = useState<string | null>(null);
-  const [entry, setEntry] = useState<RosterEntry | null>(null);
+  const [idLoading, setIdLoading] = useState(false);
+  const [maskedEmail, setMaskedEmail] = useState<string | null>(null);
 
   const [otpDigits, setOtpDigits] = useState<string[]>(Array(OTP_LENGTH).fill(""));
   const [otpError, setOtpError] = useState<string | null>(null);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [resending, setResending] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
 
+  const [setPasswordToken, setSetPasswordToken] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSubmitting, setPasswordSubmitting] = useState(false);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -43,17 +49,31 @@ export default function SignupPage() {
     return () => clearTimeout(t);
   }, [cooldown]);
 
-  function handleIdContinue() {
+  async function handleIdContinue() {
     const trimmed = studentId.trim();
-    const match = roster.find((r) => r.id.toLowerCase() === trimmed.toLowerCase());
-    if (!match) {
-      setIdError("We couldn't find that ID — check with your instructor if you think this is a mistake.");
-      return;
-    }
+    if (!trimmed || idLoading) return;
     setIdError(null);
-    setEntry(match);
-    setStep("otp");
-    setCooldown(RESEND_COOLDOWN_S);
+    setIdLoading(true);
+    try {
+      const res = await fetch("/api/auth/student/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ student_id: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setIdError(data.error || "Something went wrong. Try again.");
+        return;
+      }
+      setMaskedEmail(data.maskedEmail);
+      setOtpDigits(Array(OTP_LENGTH).fill(""));
+      setStep("otp");
+      setCooldown(RESEND_COOLDOWN_S);
+    } catch {
+      setIdError("Couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setIdLoading(false);
+    }
   }
 
   function handleOtpChange(i: number, value: string) {
@@ -75,34 +95,89 @@ export default function SignupPage() {
     }
   }
 
-  function verifyOtp(code: string) {
-    if (code !== MOCK_OTP) {
-      setOtpError("That code didn't match — double-check and try again.");
-      return;
+  async function verifyOtp(code: string) {
+    if (otpVerifying) return;
+    setOtpVerifying(true);
+    setOtpError(null);
+    try {
+      const res = await fetch("/api/auth/student/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ student_id: studentId.trim(), code }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setOtpError(data.error || "That code didn't match — double-check and try again.");
+        return;
+      }
+      setSetPasswordToken(data.token);
+      setStep("password");
+    } catch {
+      setOtpError("Couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setOtpVerifying(false);
     }
-    setOtpError(null);
-    setStep("password");
   }
 
-  function handleResend() {
-    if (cooldown > 0) return;
-    setOtpDigits(Array(OTP_LENGTH).fill(""));
+  async function handleResend() {
+    if (cooldown > 0 || resending) return;
+    setResending(true);
     setOtpError(null);
-    setCooldown(RESEND_COOLDOWN_S);
-    otpRefs.current[0]?.focus();
+    try {
+      const res = await fetch("/api/auth/student/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ student_id: studentId.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setOtpError(data.error || "Couldn't resend the code. Try again shortly.");
+        return;
+      }
+      setOtpDigits(Array(OTP_LENGTH).fill(""));
+      setCooldown(RESEND_COOLDOWN_S);
+      otpRefs.current[0]?.focus();
+    } catch {
+      setOtpError("Couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setResending(false);
+    }
   }
 
-  function handlePasswordSubmit() {
-    if (password.length < 6) {
-      setPasswordError("Password must be at least 6 characters.");
+  async function handlePasswordSubmit() {
+    if (passwordSubmitting) return;
+    if (password.length < 8) {
+      setPasswordError("Password must be at least 8 characters.");
       return;
     }
     if (password !== confirmPassword) {
       setPasswordError("Those passwords don't match — give it another try.");
       return;
     }
+    if (!setPasswordToken) {
+      setPasswordError("Your session expired — start sign-up again.");
+      return;
+    }
     setPasswordError(null);
-    router.push("/dashboard");
+    setPasswordSubmitting(true);
+    try {
+      const res = await fetch("/api/auth/student/set-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: setPasswordToken, password, confirm_password: confirmPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPasswordError(data.error || "Something went wrong. Try again.");
+        return;
+      }
+      setSession(data.token, data.role as Role);
+      router.push("/dashboard");
+    } catch {
+      setPasswordError("Couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setPasswordSubmitting(false);
+    }
   }
 
   const strength = passwordStrength(password);
@@ -137,23 +212,28 @@ export default function SignupPage() {
               value={studentId}
               onChange={(e) => setStudentId(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleIdContinue()}
-              placeholder="e.g. 21-0001"
+              placeholder="e.g. S10293"
               autoFocus
             />
             {idError && <p className={styles.fieldError}>{idError}</p>}
 
-            <button type="button" className={styles.primaryButton} onClick={handleIdContinue} disabled={!studentId.trim()}>
-              Continue
+            <button
+              type="button"
+              className={styles.primaryButton}
+              onClick={handleIdContinue}
+              disabled={!studentId.trim() || idLoading}
+            >
+              {idLoading ? "Checking…" : "Continue"}
               <ArrowIcon size={14} />
             </button>
           </div>
         )}
 
-        {step === "otp" && entry && (
+        {step === "otp" && maskedEmail && (
           <div className={styles.stepBody}>
             <h1 className={styles.title}>Check your email</h1>
             <p className={styles.subtitle}>
-              We sent a 6-digit code to <strong>{maskEmail(entry.email)}</strong>. It expires in 10 minutes.
+              We sent a 6-digit code to <strong>{maskedEmail}</strong>. It expires in 10 minutes.
             </p>
 
             <div className={styles.otpRow}>
@@ -170,6 +250,7 @@ export default function SignupPage() {
                   inputMode="numeric"
                   maxLength={1}
                   autoFocus={i === 0}
+                  disabled={otpVerifying}
                 />
               ))}
             </div>
@@ -179,9 +260,9 @@ export default function SignupPage() {
               type="button"
               className={styles.resendButton}
               onClick={handleResend}
-              disabled={cooldown > 0}
+              disabled={cooldown > 0 || resending}
             >
-              {cooldown > 0 ? `Resend code in ${cooldown}s` : "Resend code"}
+              {resending ? "Resending…" : cooldown > 0 ? `Resend code in ${cooldown}s` : "Resend code"}
             </button>
           </div>
         )}
@@ -228,9 +309,9 @@ export default function SignupPage() {
               type="button"
               className={styles.primaryButton}
               onClick={handlePasswordSubmit}
-              disabled={!password || !confirmPassword}
+              disabled={!password || !confirmPassword || passwordSubmitting}
             >
-              Create account
+              {passwordSubmitting ? "Creating account…" : "Create account"}
               <ArrowIcon size={14} />
             </button>
           </div>
