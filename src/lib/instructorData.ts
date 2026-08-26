@@ -33,6 +33,8 @@ export interface UploadedFile {
   status: FileStatus;
   progress?: number;
   errorReason?: string;
+  documentId?: string;
+  r2Key?: string;
 }
 
 export const instructorProfile: InstructorProfile = {

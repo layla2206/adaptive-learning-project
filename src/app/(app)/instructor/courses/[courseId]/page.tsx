@@ -76,7 +76,7 @@ export default function CourseUploadPage() {
       const formData = new FormData();
       formData.append("file", fileObj);
       formData.append("courseId", params.courseId);
-      formData.append("instructorId", "inst-1");
+      formData.append("instructorId", "550e8400-e29b-41d4-a716-446655440000");
 
       const response = await fetch("/api/upload", {
         method: "POST",
@@ -92,7 +92,7 @@ export default function CourseUploadPage() {
       setFiles((prev) =>
         prev.map((f) =>
           f.id === id
-            ? { ...f, status: "tagging", progress: 100 }
+            ? { ...f, status: "tagging", progress: 100, documentId: result.documentId, r2Key: result.r2Key }
             : f
         )
       );
@@ -168,9 +168,25 @@ export default function CourseUploadPage() {
     setRetagLecture("");
   }
 
-  function handleRemove(id: string) {
+  async function handleRemove(id: string) {
+    const fileToRemove = files.find((f) => f.id === id);
     setFiles((prev) => prev.filter((f) => f.id !== id));
     setConfirmRemoveId(null);
+
+    if (fileToRemove?.documentId && fileToRemove?.r2Key) {
+      try {
+        await fetch("/api/upload", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            documentId: fileToRemove.documentId,
+            r2Key: fileToRemove.r2Key,
+          }),
+        });
+      } catch (err) {
+        console.error("Failed to delete file from backend", err);
+      }
+    }
   }
 
   const inFlight = files.filter((f) => IN_FLIGHT.includes(f.status));
