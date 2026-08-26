@@ -73,7 +73,7 @@ def parse_document(file_bytes: bytes, file_type: str) -> str:
     
     return text
 
-def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[dict]:
+def chunk_text(text: str, chunk_size: int = 600, overlap: int = 100) -> List[dict]:
     """Splits text into chunks with sliding window overlap."""
     if not text:
         return []
@@ -86,10 +86,21 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[di
         
         # Adjust end to the nearest space or newline if not at the end of the text
         if end < len(text):
-            last_space = chunk_str.rfind(' ')
+            last_double_newline = chunk_str.rfind('\n\n')
             last_newline = chunk_str.rfind('\n')
-            split_point = max(last_space, last_newline)
-            if split_point > chunk_size // 2:  # Don't split too early
+            last_space = chunk_str.rfind(' ')
+            
+            # Paragraph and header aware: prioritize \n\n, then \n, then space
+            if last_double_newline > chunk_size // 2:
+                split_point = last_double_newline
+            elif last_newline > chunk_size // 2:
+                split_point = last_newline
+            elif last_space > chunk_size // 2:
+                split_point = last_space
+            else:
+                split_point = -1
+
+            if split_point != -1:
                 end = start + split_point
                 chunk_str = text[start:end]
                 
@@ -234,4 +245,241 @@ async def delete_document(req: DeleteRequest):
         return {"success": True}
     except Exception as e:
         print("Delete Error:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# DEV C: LEARNER PROFILE API
+# ==========================================
+
+@app.get("/profile/{student_id}")
+async def get_student_profile(student_id: str):
+    try:
+        # Fetch enrolled courses
+        enrolls = supabase.table("enrollments").select("course_id").eq("student_id", student_id).execute()
+        if not enrolls.data:
+            return {"subjects": [], "userProfile": {"name": "Student", "streakDays": 0, "totalXp": 0, "week": []}}
+
+        course_ids = [e["course_id"] for e in enrolls.data]
+        
+        # Fetch courses
+        courses_res = supabase.table("courses").select("*").in_("course_id", course_ids).execute()
+        
+        # Fetch topics for these courses
+        topics_res = supabase.table("topics").select("*").in_("course_id", course_ids).execute()
+        
+        # Fetch student mastery profiles
+        profiles_res = supabase.table("student_profiles").select("*").eq("student_id", student_id).execute()
+        profile_map = {p["topic_id"]: p for p in profiles_res.data} if profiles_res.data else {}
+        
+        subjects = []
+        for course in courses_res.data:
+            course_topics = [t for t in topics_res.data if t["course_id"] == course["course_id"]]
+            
+            topics_out = []
+            for t in course_topics:
+                sp = profile_map.get(t["topic_id"])
+                pct = float(sp["mastery_percent"]) if sp and sp.get("mastery_percent") else 0
+                state = "locked"
+                if pct > 90:
+                    state = "mastered"
+                elif pct > 0 or sp:
+                    state = "in-progress"
+                    
+                topics_out.append({
+                    "id": t["topic_id"],
+                    "name": t["topic_name"],
+                    "state": state,
+                    "progressPct": pct
+                })
+                
+            subjects.append({
+                "id": course["course_id"],
+                "name": course["course_name"],
+                "summary": "Generated summary...",
+                "building": "citadel", # Mock for now
+                "topics": topics_out
+            })
+            
+        # Basic student info
+        student_res = supabase.table("students").select("*").eq("student_id", student_id).execute()
+        student_name = student_res.data[0]["name"] if student_res.data else "Student"
+
+        # Return identical structure to data.ts
+        return {
+            "subjects": subjects,
+            "userProfile": {
+                "name": student_name,
+                "streakDays": 1,
+                "totalXp": 100,
+                "week": [
+                    {"label": "M", "state": "done"},
+                    {"label": "T", "state": "done"},
+                    {"label": "W", "state": "done"},
+                    {"label": "T", "state": "done"},
+                    {"label": "F", "state": "today"},
+                    {"label": "S", "state": "upcoming"},
+                    {"label": "S", "state": "upcoming"}
+                ]
+            }
+        }
+    except Exception as e:
+        print("Get Profile Error:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ProfileUpdateRequest(BaseModel):
+    student_id: str
+    topic_id: str
+    mastery_percent: float
+    level: str
+
+@app.post("/profile/update")
+async def update_profile(req: ProfileUpdateRequest):
+    try:
+        data = {
+            "student_id": req.student_id,
+            "topic_id": req.topic_id,
+            "mastery_percent": req.mastery_percent,
+            "level": req.level
+        }
+        # Upsert
+        res = supabase.table("student_profiles").upsert(data).execute()
+        return {"success": True, "data": res.data}
+    except Exception as e:
+        print("Update Profile Error:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# DEV C: DIAGNOSTIC QUIZ API
+# ==========================================
+import json
+
+class DiagnosticGenerateReq(BaseModel):
+    topic_id: str
+    student_id: str
+
+@app.post("/diagnostic/generate")
+async def generate_diagnostic(req: DiagnosticGenerateReq):
+    try:
+        # Fetch some chunks for this topic (simple pseudo-random retrieval)
+        chunks_res = supabase.table("chunks").select("chunk_text").eq("topic_id", req.topic_id).limit(5).execute()
+        
+        if not chunks_res.data:
+            return {"error": "No content found for this topic to generate questions."}
+            
+        context_text = "\n\n".join([c["chunk_text"] for c in chunks_res.data])
+        
+        # Call Gemini to generate 2 MCQ questions
+        prompt = f"""
+        Based on the following educational content, generate 2 multiple-choice diagnostic questions to test a student's understanding.
+        Return ONLY a JSON array of objects with the exact following schema, nothing else (no markdown blocks, no intro):
+        [
+          {{
+            "question_text": "The question here?",
+            "options": ["A", "B", "C", "D"],
+            "correct_answer": "A",
+            "difficulty": "Medium"
+          }}
+        ]
+        
+        Content:
+        {context_text}
+        """
+        
+        response = gemini_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config={'response_mime_type': 'application/json'}
+        )
+        
+        # Parse JSON
+        questions_data = json.loads(response.text)
+        
+        # Save to DB and format for frontend
+        saved_questions = []
+        frontend_questions = []
+        
+        for q in questions_data:
+            q_id = f"q-{str(uuid.uuid4())[:6]}"
+            db_record = {
+                "question_id": q_id,
+                "topic_id": req.topic_id,
+                "question_text": json.dumps({"text": q["question_text"], "options": q["options"]}),
+                "difficulty": q.get("difficulty", "Medium"),
+                "correct_answer": q["correct_answer"],
+                "question_type": "MCQ"
+            }
+            supabase.table("diagnostic_questions").insert(db_record).execute()
+            
+            frontend_questions.append({
+                "question_id": q_id,
+                "text": q["question_text"],
+                "options": q["options"]
+            })
+            
+        return {"success": True, "questions": frontend_questions}
+    except Exception as e:
+        print("Generate Diagnostic Error:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class AnswerSubmission(BaseModel):
+    question_id: str
+    student_answer: str
+    
+class DiagnosticSubmitReq(BaseModel):
+    student_id: str
+    answers: List[AnswerSubmission]
+
+@app.post("/diagnostic/submit")
+async def submit_diagnostic(req: DiagnosticSubmitReq):
+    try:
+        correct_count = 0
+        total = len(req.answers)
+        topic_id = None
+        
+        results_to_insert = []
+        for ans in req.answers:
+            # Check answer
+            q_res = supabase.table("diagnostic_questions").select("*").eq("question_id", ans.question_id).single().execute()
+            if not q_res.data:
+                continue
+                
+            q_data = q_res.data
+            topic_id = q_data["topic_id"]
+            is_correct = (ans.student_answer.strip().lower() == q_data["correct_answer"].strip().lower())
+            
+            if is_correct:
+                correct_count += 1
+                
+            results_to_insert.append({
+                "result_id": f"res-{str(uuid.uuid4())[:6]}",
+                "student_id": req.student_id,
+                "question_id": ans.question_id,
+                "student_answer": ans.student_answer,
+                "is_correct": is_correct
+            })
+            
+        if results_to_insert:
+            supabase.table("diagnostic_results").insert(results_to_insert).execute()
+            
+        # Update profile
+        if topic_id and total > 0:
+            score_pct = (correct_count / total) * 100
+            level = "Beginner"
+            if score_pct == 100:
+                level = "Advanced"
+            elif score_pct > 0:
+                level = "Intermediate"
+                
+            supabase.table("student_profiles").upsert({
+                "student_id": req.student_id,
+                "topic_id": topic_id,
+                "mastery_percent": score_pct,
+                "level": level
+            }).execute()
+            
+        return {"success": True, "score": f"{correct_count}/{total}"}
+    except Exception as e:
+        print("Submit Diagnostic Error:", e)
         raise HTTPException(status_code=500, detail=str(e))
