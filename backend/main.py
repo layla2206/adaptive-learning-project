@@ -1,6 +1,7 @@
 import os
 import uuid
 import time
+from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -417,3 +418,298 @@ async def submit_diagnostic(req: DiagnosticSubmitReq):
     except Exception as e:
         print("Submit Diagnostic Error:", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# DEV PHASE 2: ADAPTIVE LOOP API
+# ==========================================
+
+SESSION_TTL_HOURS = 4
+MASTERY_PASS_THRESHOLD = 70
+
+
+def short_id(prefix: str, length: int = 15) -> str:
+    return f"{prefix}{uuid.uuid4().hex}"[:length]
+
+
+def level_for_mastery(score: float) -> str:
+    if score == 100:
+        return "Advanced"
+    if score > 0:
+        return "Intermediate"
+    return "Beginner"
+
+
+def parse_gemini_json(response) -> dict:
+    try:
+        parsed = json.loads(response.text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="AI returned invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="AI returned an invalid evaluation")
+    return parsed
+
+
+def score_value(value, field_name: str) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HTTPException(status_code=502, detail=f"AI returned an invalid {field_name}")
+    return max(0, min(100, float(value)))
+
+
+def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[str] = None) -> str:
+    if session_id:
+        existing = supabase.table("sessions").select("session_id").eq("session_id", session_id).eq("student_id", student_id).maybe_single().execute()
+        if existing.data:
+            return session_id
+
+    latest = (
+        supabase.table("sessions")
+        .select("session_id, started_at")
+        .eq("student_id", student_id)
+        .eq("topic_id", topic_id)
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if latest.data:
+        started_at = latest.data[0].get("started_at")
+        if started_at:
+            try:
+                started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                age_hours = (datetime.now(timezone.utc) - started).total_seconds() / 3600
+                if age_hours < SESSION_TTL_HOURS:
+                    return latest.data[0]["session_id"]
+            except (TypeError, ValueError):
+                pass
+
+    new_session_id = short_id("ses")
+    supabase.table("sessions").insert({
+        "session_id": new_session_id,
+        "student_id": student_id,
+        "topic_id": topic_id,
+    }).execute()
+    return new_session_id
+
+
+def append_session_message(session_id: str, sender: str, text: str):
+    supabase.table("session_messages").insert({
+        "message_id": short_id("msg", 20),
+        "session_id": session_id,
+        "sender": sender,
+        "message_text": text,
+    }).execute()
+
+
+def get_recent_session_messages(session_id: str, limit: int = 10) -> List[dict]:
+    messages = (
+        supabase.table("session_messages")
+        .select("sender, message_text, timestamp")
+        .eq("session_id", session_id)
+        .order("timestamp", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return list(reversed(messages.data or []))
+
+
+def format_session_context(messages: List[dict]) -> str:
+    if not messages:
+        return "No prior conversation context."
+    return "\n".join(f"{message.get('sender', 'unknown')}: {message.get('message_text', '')}" for message in messages)
+
+
+class MasteryCheckRequest(BaseModel):
+    student_id: str
+    topic_id: str
+    session_id: Optional[str] = None
+    explanation: Optional[str] = None
+    solution: Optional[str] = None
+
+
+@app.post("/mastery/check")
+async def check_mastery(req: MasteryCheckRequest):
+    explanation = req.explanation.strip() if req.explanation else None
+    solution = req.solution.strip() if req.solution else None
+    if not explanation and not solution:
+        raise HTTPException(status_code=400, detail="At least one of explanation or solution is required")
+
+    try:
+        session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
+        chunks_res = supabase.table("chunks").select("chunk_text").eq("topic_id", req.topic_id).limit(8).execute()
+        if not chunks_res.data:
+            raise HTTPException(status_code=422, detail="No learning content found for this topic")
+
+        recent_messages = get_recent_session_messages(session_id)
+        checks = (
+            supabase.table("mastery_checks")
+            .select("mastery_id", count="exact", head=True)
+            .eq("student_id", req.student_id)
+            .eq("topic_id", req.topic_id)
+            .execute()
+        )
+        attempt_number = (checks.count or 0) + 1
+        submissions = []
+        if explanation:
+            submissions.append(("explain_score", "Explain in your own words", explanation))
+        if solution:
+            submissions.append(("solve_score", "Solve end-to-end", solution))
+
+        prompt = f"""Evaluate the student's submitted response(s) for the topic below.
+Use the learning content as the only source of truth. Judge correctness and completeness only against it.
+If an answer is not addressed by the source material, say so rather than inventing an external standard of correctness.
+Score only fields that were submitted; return null for the other score.
+Return ONLY strict JSON with this exact shape:
+{{"explain_score": 0, "solve_score": null, "feedback": "1-2 sentences to the student", "mistake_tag": "concept_confusion|calculation_error|incomplete|off_topic|none"}}
+
+Learning content:
+{chr(10).join(chunk["chunk_text"] for chunk in chunks_res.data)}
+
+Prior conversation context:
+{format_session_context(recent_messages)}
+
+Student submissions:
+{chr(10).join(f"{label}: {text}" for _, label, text in submissions)}"""
+
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        evaluation = parse_gemini_json(response)
+        explain_score = score_value(evaluation.get("explain_score"), "explain_score") if explanation else None
+        solve_score = score_value(evaluation.get("solve_score"), "solve_score") if solution else None
+        scores = [score for score in (explain_score, solve_score) if score is not None]
+        if not scores:
+            raise HTTPException(status_code=502, detail="AI did not score the submitted response")
+        feedback = evaluation.get("feedback")
+        mistake_tag = evaluation.get("mistake_tag", "none")
+        if not isinstance(feedback, str) or not feedback.strip():
+            raise HTTPException(status_code=502, detail="AI returned invalid feedback")
+        if mistake_tag not in {"concept_confusion", "calculation_error", "incomplete", "off_topic", "none"}:
+            mistake_tag = "none"
+
+        overall_mastery = sum(scores) / len(scores)
+        passed = overall_mastery >= MASTERY_PASS_THRESHOLD
+        answer_rows = [{
+            "answer_id": short_id("ans"),
+            "student_id": req.student_id,
+            "topic_id": req.topic_id,
+            "session_id": session_id,
+            "question_text": label,
+            "student_answer": text,
+            "score": explain_score if score_field == "explain_score" else solve_score,
+            "mistake_tag": mistake_tag,
+        } for score_field, label, text in submissions]
+        supabase.table("student_answers").insert(answer_rows).execute()
+        supabase.table("mastery_checks").insert({
+            "mastery_id": short_id("mst"),
+            "student_id": req.student_id,
+            "topic_id": req.topic_id,
+            "attempt_number": attempt_number,
+            "explain_score": explain_score,
+            "solve_score": solve_score,
+            "overall_mastery": overall_mastery,
+            "passed": passed,
+        }).execute()
+        supabase.table("student_profiles").upsert({
+            "student_id": req.student_id,
+            "topic_id": req.topic_id,
+            "mastery_percent": overall_mastery,
+            "level": level_for_mastery(overall_mastery),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+
+        pending = (
+            supabase.table("retry_attempts")
+            .select("retry_id")
+            .eq("student_id", req.student_id)
+            .eq("topic_id", req.topic_id)
+            .is_("result", "null")
+            .order("attempted_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if pending.data:
+            supabase.table("retry_attempts").update({"result": "Passed" if passed else "Failed"}).eq("retry_id", pending.data[0]["retry_id"]).execute()
+        append_session_message(session_id, "ai", feedback)
+        return {
+            "sessionId": session_id,
+            "overallMastery": overall_mastery,
+            "passed": passed,
+            "feedback": feedback,
+            "explainScore": explain_score,
+            "solveScore": solve_score,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("Mastery Check Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to evaluate mastery") from exc
+
+
+class RetryGenerateRequest(BaseModel):
+    student_id: str
+    topic_id: str
+    session_id: Optional[str] = None
+
+
+@app.post("/retry/generate")
+async def generate_retry(req: RetryGenerateRequest):
+    try:
+        session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
+        retries = (
+            supabase.table("retry_attempts")
+            .select("retry_id", count="exact", head=True)
+            .eq("student_id", req.student_id)
+            .eq("topic_id", req.topic_id)
+            .execute()
+        )
+        attempt_number = (retries.count or 0) + 1
+        format_used = "Worked Example" if attempt_number % 2 == 1 else "Hands-on Task"
+        chunks_res = supabase.table("chunks").select("chunk_id, chunk_text").eq("topic_id", req.topic_id).limit(8).execute()
+        if not chunks_res.data:
+            raise HTTPException(status_code=422, detail="No learning content found for this topic")
+
+        format_instruction = (
+            "Produce a fully worked, step-by-step example solved using the topic's method."
+            if format_used == "Worked Example"
+            else "Produce a short guided exercise for the student to attempt, explaining the underlying idea first."
+        )
+        prompt = f"""Create a retry intervention for the topic using only the learning content below.
+Format: {format_used}. {format_instruction}
+Return ONLY strict JSON: {{"content": "...", "citedChunkIds": ["chunk_id", ...]}}
+Only cite chunk IDs included below.
+
+Learning content:
+{chr(10).join(f"[{chunk['chunk_id']}] {chunk['chunk_text']}" for chunk in chunks_res.data)}"""
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        generated = parse_gemini_json(response)
+        content = generated.get("content")
+        cited_ids = generated.get("citedChunkIds", [])
+        valid_ids = {chunk["chunk_id"] for chunk in chunks_res.data}
+        if not isinstance(content, str) or not content.strip() or not isinstance(cited_ids, list):
+            raise HTTPException(status_code=502, detail="AI returned invalid retry content")
+        cited_ids = [chunk_id for chunk_id in cited_ids if isinstance(chunk_id, str) and chunk_id in valid_ids]
+        supabase.table("retry_attempts").insert({
+            "retry_id": short_id("rty"),
+            "student_id": req.student_id,
+            "topic_id": req.topic_id,
+            "attempt_number": attempt_number,
+            "format_used": format_used,
+            "result": None,
+        }).execute()
+        append_session_message(session_id, "ai", content)
+        return {"sessionId": session_id, "format": format_used, "content": content, "citedChunkIds": cited_ids}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("Retry Generation Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to generate retry content") from exc
