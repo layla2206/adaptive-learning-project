@@ -423,6 +423,7 @@ export default function CourseUploadPage() {
 
       <div
         className={`${styles.dropzone} ${isDragging ? styles.dropzoneActive : ""}`}
+        onClick={() => fileInputRef.current?.click()}
         onDragOver={(e) => {
           e.preventDefault();
           setIsDragging(true);
@@ -439,7 +440,14 @@ export default function CourseUploadPage() {
         </span>
         <p className={styles.dropzoneTitle}>Drag and drop slides, PDFs, or readings</p>
         <p className={styles.dropzoneHint}>or</p>
-        <button type="button" className={styles.browseButton} onClick={() => fileInputRef.current?.click()}>
+        <button
+          type="button"
+          className={styles.browseButton}
+          onClick={(e) => {
+            e.stopPropagation();
+            fileInputRef.current?.click();
+          }}
+        >
           Browse files
         </button>
         <input

@@ -146,7 +146,7 @@ async def upload_document(
         extension = filename[filename.rfind("."):] if "." in filename else ""
         
         timestamp = int(time.time() * 1000)
-        unique_id = f"doc-{str(uuid.uuid4())[:8]}"
+        unique_id = f"doc-{str(uuid.uuid4())[:6]}"
         
         # Sanitize filename for R2 key
         import re
@@ -214,7 +214,7 @@ async def upload_document(
 
         return {
             "success": True,
-            "documentId": unique_id,
+            "documentId": unique_id[:10],
             "fileName": filename,
             "r2Key": r2_key,
             "fileType": extension.replace(".", ""),

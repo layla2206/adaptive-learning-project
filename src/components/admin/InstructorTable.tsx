@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AccountStatus, InstructorAccount } from "@/lib/adminData";
 import { PlusIcon } from "@/components/icons";
 import { getSession } from "@/lib/session";
@@ -11,6 +11,11 @@ export default function InstructorTable({ instructors }: { instructors: Instruct
   const [statusById, setStatusById] = useState<Record<string, AccountStatus>>(() =>
     Object.fromEntries(instructors.map((i) => [i.id, i.status]))
   );
+
+  useEffect(() => {
+    setAccounts(instructors);
+    setStatusById(Object.fromEntries(instructors.map((i) => [i.id, i.status])));
+  }, [instructors]);
 
   const [formOpen, setFormOpen] = useState(false);
   const [name, setName] = useState("");
