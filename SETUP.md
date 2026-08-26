@@ -1,7 +1,7 @@
 # 🚀 Project Setup Guide
-## Adaptive Learning Tutor — Frontend (Student / Instructor / Admin)
+## Adaptive Learning Tutor (Next.js + FastAPI Backend)
 
-Welcome! Follow this step-by-step guide to get the app running locally.
+Welcome! Follow this step-by-step guide to get the app running locally. Our architecture uses a **Next.js frontend** that proxies heavy data-processing requests (like document chunking, embeddings, and diagnostic generation) to a **Python FastAPI backend**.
 
 ---
 
@@ -9,93 +9,74 @@ Welcome! Follow this step-by-step guide to get the app running locally.
 
 | Component | Required Specification |
 |---|---|
-| **Node.js Version** | **`>= 20.9.0`** (LTS recommended — this repo was built on `v24.9.0`) |
-| **Package Manager** | **`npm`** (comes with Node — this project does not use yarn/pnpm/bun) |
-| **Editor / IDE** | **VS Code** (or any editor with TypeScript + ESLint support) |
-| **API Keys** | **None required.** This app is currently frontend-only — every screen runs on mock data in `src/lib/*.ts` and in-browser state. There is no database and no `process.env` usage anywhere in the codebase. |
+| **Node.js Version** | **`>= 20.9.0`** (LTS recommended) |
+| **Python Version** | **`>= 3.9`** |
+| **Package Managers**| **`npm`** (for frontend) and **`pip`** (for backend) |
+| **Editor / IDE** | **VS Code** (with TypeScript and Python extensions) |
 
 ---
 
-## 🛠️ Step 1: Install Node.js
+## 🔑 Environment Configuration (`.env.local`)
 
-If you don't already have Node 20.9+ installed:
-
-* **macOS (via [nvm](https://github.com/nvm-sh/nvm), recommended):**
-  ```bash
-  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-  nvm install 20
-  nvm use 20
-  ```
-
-* **Or download directly:** [nodejs.org](https://nodejs.org) (choose the LTS build)
-
-* **Verify installation:**
-  ```bash
-  node -v   # should print v20.9.0 or higher
-  npm -v
-  ```
-
----
-
-## 📦 Step 2: Install Dependencies
-
-From the project root:
+You will need real API keys now that the backend is wired up to Supabase, Cloudflare R2, and Google Gemini! 
+Copy the example file to create your local environment file:
 
 ```bash
-npm install
+cp .env.example .env.local
 ```
+
+You must fill in the following variables in `.env.local` for the backend to work:
+* `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+* `CLOUDFLARE_R2_ACCOUNT_ID`, `CLOUDFLARE_R2_ACCESS_KEY_ID`, `CLOUDFLARE_R2_SECRET_ACCESS_KEY`
+* `GEMINI_API_KEY`
 
 ---
 
-## 🔑 Step 3: Environment Configuration (`.env`)
+## 🛠️ Step 1: Set up the Python Backend
 
-There's nothing to fill in yet, but for consistency with the convention:
+Our FastAPI backend handles document ingestion, chunking, AI embedding generation, and diagnostic quiz creation.
 
-```bash
-cp .env.example .env
-```
+1. Navigate to the backend directory:
+   ```bash
+   cd backend
+   ```
+2. Create and activate a Python virtual environment:
+   * **Windows:** `python -m venv venv` then `.\venv\Scripts\Activate.ps1`
+   * **macOS/Linux:** `python3 -m venv venv` then `source venv/bin/activate`
+3. Install the required Python packages (listed in `backend/requirements.txt`):
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Run the FastAPI development server (it runs on port 8000 by default):
+   ```bash
+   uvicorn main:app --reload
+   ```
 
-See `.env.example` for details — it's a placeholder for when backend work (database, auth secrets) begins. The app runs fully without it today.
-
----
-
-## 📓 Step 4: VS Code Configuration
-
-1. Install the recommended extensions:
-   - **ESLint** (`dbaeumer.vscode-eslint`)
-2. Open the project folder — TypeScript and Next.js support work out of the box, no interpreter/environment selection needed (unlike a Python project).
-
----
-
-## ▶️ Step 5: Run the Dev Server
-
-```bash
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) in your browser. Key routes to try:
-
-| Route | Screen |
-|---|---|
-| `/` | Marketing home |
-| `/signup` | Student sign-up flow (ID → OTP → password) |
-| `/dashboard` | Student dashboard |
-| `/subject/dsa` | Subject milestone journey |
-| `/subject/dsa/topic/graphs` | Topic tutor loop |
-| `/score` | Weekly calendar + trophy cabinet |
-| `/instructor` | Instructor dashboard |
-| `/instructor/courses/cs201` | Instructor content upload |
-| `/admin` | Admin panel |
+*(Keep this terminal window running!)*
 
 ---
 
-## ✅ Step 6: Verify Your Environment
+## 📦 Step 2: Set up the Next.js Frontend
 
-Run the same checks used throughout development — if both pass, your environment is ready:
+Open a **new terminal window** and navigate to the project root:
 
-```bash
-npm run build
-npm run lint
-```
+1. Install frontend dependencies:
+   ```bash
+   npm install
+   ```
+2. Run the Next.js development server:
+   ```bash
+   npm run dev
+   ```
 
-If `npm run build` finishes with a route table printed and `npm run lint` reports no errors, you're completely ready to work on the project.
+*(Keep this terminal window running!)*
+
+---
+
+## ▶️ Step 3: Verify the Application
+
+Open [http://localhost:3000](http://localhost:3000) in your browser. 
+
+The Next.js frontend is now successfully proxying requests to your FastAPI backend! You can test this by navigating to the Instructor Dashboard (`/instructor/courses/cs201`) and uploading a file. 
+
+You can also view the auto-generated Swagger API documentation for the Python backend by visiting [http://localhost:8000/docs](http://localhost:8000/docs).
