@@ -1,15 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getCurrentUser, getStudentId } from "@/lib/authMiddleware";
 
 const FASTAPI_URL = "http://127.0.0.1:8000";
 
 export async function POST(req: NextRequest) {
   try {
+    const currentUser = getCurrentUser(req);
+    if (!currentUser || currentUser.role !== "student") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+    const studentId = await getStudentId(currentUser.user_id);
+    if (!studentId) {
+      return NextResponse.json({ error: "Something went wrong. Try again." }, { status: 500 });
+    }
+
     const body = await req.json();
-    
+    const topicId = typeof body?.topic_id === "string" ? body.topic_id : null;
+    if (!topicId) {
+      return NextResponse.json({ error: "topic_id is required" }, { status: 400 });
+    }
+
+    // student_id is server-resolved, not taken from the request body.
     const response = await fetch(`${FASTAPI_URL}/diagnostic/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ topic_id: topicId, student_id: studentId }),
     });
 
     if (!response.ok) {
@@ -19,11 +34,9 @@ export async function POST(req: NextRequest) {
 
     const data = await response.json();
     return NextResponse.json(data);
-  } catch (error: any) {
+  } catch (error) {
     console.error("Diagnostic Generate proxy error:", error);
-    return NextResponse.json(
-      { error: error?.message || "Internal Next.js proxy failure" },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : "Internal Next.js proxy failure";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

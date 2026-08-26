@@ -1,4 +1,5 @@
-import type { Topic, TopicState, DayState } from "./types";
+import { supabase } from "./supabaseClient";
+import type { Topic, TopicState, DayState, Subject } from "./types";
 
 const DAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
 
@@ -117,4 +118,88 @@ export function computeWeeklyCompletionDayIndex(
     if (idx !== -1 && (latestIndex === null || idx > latestIndex)) latestIndex = idx;
   }
   return latestIndex;
+}
+
+export interface StudentProfilePayload {
+  userName: string;
+  streakDays: number;
+  totalXp: number;
+  week: { label: string; state: DayState }[];
+  subjects: Subject[];
+}
+
+/**
+ * The single source of truth for "what does this student's dashboard look
+ * like" — real streak/XP/mastery/milestone state computed from the DB, no
+ * mock data. Used by both /api/student/dashboard (a student viewing their
+ * own data) and /api/profile/[studentId] (an instructor/admin, or the
+ * student, looking up a specific student) — there should never be a second,
+ * separately-maintained implementation of this.
+ */
+export async function buildStudentProfile(studentId: string): Promise<StudentProfilePayload> {
+  const { data: studentRow } = await supabase.from("students").select("name").eq("student_id", studentId).maybeSingle();
+
+  const { data: enrollmentRows } = await supabase.from("enrollments").select("course_id").eq("student_id", studentId);
+  const courseIds = (enrollmentRows ?? []).map((e) => e.course_id);
+
+  if (courseIds.length === 0) {
+    return {
+      userName: studentRow?.name ?? "there",
+      streakDays: 0,
+      totalXp: 0,
+      week: computeWeekStates(new Set()),
+      subjects: [],
+    };
+  }
+
+  const [{ data: courseRows }, { data: topicRows }, { data: xpRows }] = await Promise.all([
+    supabase.from("courses").select("course_id, course_name, summary, building").in("course_id", courseIds),
+    supabase.from("topics").select("topic_id, course_id, topic_name, sort_order").in("course_id", courseIds),
+    supabase.from("xp_log").select("amount, created_at").eq("student_id", studentId),
+  ]);
+
+  const topicIds = (topicRows ?? []).map((t) => t.topic_id);
+
+  const [{ data: profileRows }, { data: passedChecks }] = await Promise.all([
+    topicIds.length
+      ? supabase.from("student_profiles").select("topic_id, mastery_percent").eq("student_id", studentId).in("topic_id", topicIds)
+      : Promise.resolve({ data: [] as ProfileRow[] }),
+    topicIds.length
+      ? supabase
+          .from("mastery_checks")
+          .select("topic_id, checked_at")
+          .eq("student_id", studentId)
+          .eq("passed", true)
+          .in("topic_id", topicIds)
+      : Promise.resolve({ data: [] as { topic_id: string; checked_at: string }[] }),
+  ]);
+
+  const activeDateKeys = new Set((xpRows ?? []).map((x) => dateKeyUTC(new Date(x.created_at))));
+  const totalXp = (xpRows ?? []).reduce((sum, x) => sum + x.amount, 0);
+
+  const subjects: Subject[] = (courseRows ?? []).map((course) => {
+    const courseTopics = (topicRows ?? []).filter((t) => t.course_id === course.course_id);
+    const courseTopicIds = new Set(courseTopics.map((t) => t.topic_id));
+    const courseProfiles = (profileRows ?? []).filter((p) => courseTopicIds.has(p.topic_id));
+    const passDateKeysThisCourse = (passedChecks ?? [])
+      .filter((c) => courseTopicIds.has(c.topic_id))
+      .map((c) => dateKeyUTC(new Date(c.checked_at)));
+
+    return {
+      id: course.course_id,
+      name: course.course_name,
+      summary: course.summary ?? "",
+      building: (course.building ?? "citadel") as Subject["building"],
+      topics: computeTopics(courseTopics, courseProfiles),
+      weeklyCompletion: computeWeeklyCompletionDayIndex(passDateKeysThisCourse),
+    };
+  });
+
+  return {
+    userName: studentRow?.name ?? "there",
+    streakDays: computeStreakDays(activeDateKeys),
+    totalXp,
+    week: computeWeekStates(activeDateKeys),
+    subjects,
+  };
 }

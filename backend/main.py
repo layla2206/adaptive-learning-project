@@ -11,8 +11,9 @@ from supabase import create_client, Client
 import PyPDF2
 from google import genai
 
-# Load .env.local from the parent directory
-load_dotenv(dotenv_path="../.env.local")
+# Load .env from the parent directory — this repo keeps real config in
+# .env (not .env.local, which doesn't exist here), so point dotenv at that.
+load_dotenv(dotenv_path="../.env")
 
 app = FastAPI(title="Adaptive Learning Backend API")
 
@@ -251,81 +252,14 @@ async def delete_document(req: DeleteRequest):
 # ==========================================
 # DEV C: LEARNER PROFILE API
 # ==========================================
-
-@app.get("/profile/{student_id}")
-async def get_student_profile(student_id: str):
-    try:
-        # Fetch enrolled courses
-        enrolls = supabase.table("enrollments").select("course_id").eq("student_id", student_id).execute()
-        if not enrolls.data:
-            return {"subjects": [], "userProfile": {"name": "Student", "streakDays": 0, "totalXp": 0, "week": []}}
-
-        course_ids = [e["course_id"] for e in enrolls.data]
-        
-        # Fetch courses
-        courses_res = supabase.table("courses").select("*").in_("course_id", course_ids).execute()
-        
-        # Fetch topics for these courses
-        topics_res = supabase.table("topics").select("*").in_("course_id", course_ids).execute()
-        
-        # Fetch student mastery profiles
-        profiles_res = supabase.table("student_profiles").select("*").eq("student_id", student_id).execute()
-        profile_map = {p["topic_id"]: p for p in profiles_res.data} if profiles_res.data else {}
-        
-        subjects = []
-        for course in courses_res.data:
-            course_topics = [t for t in topics_res.data if t["course_id"] == course["course_id"]]
-            
-            topics_out = []
-            for t in course_topics:
-                sp = profile_map.get(t["topic_id"])
-                pct = float(sp["mastery_percent"]) if sp and sp.get("mastery_percent") else 0
-                state = "locked"
-                if pct > 90:
-                    state = "mastered"
-                elif pct > 0 or sp:
-                    state = "in-progress"
-                    
-                topics_out.append({
-                    "id": t["topic_id"],
-                    "name": t["topic_name"],
-                    "state": state,
-                    "progressPct": pct
-                })
-                
-            subjects.append({
-                "id": course["course_id"],
-                "name": course["course_name"],
-                "summary": "Generated summary...",
-                "building": "citadel", # Mock for now
-                "topics": topics_out
-            })
-            
-        # Basic student info
-        student_res = supabase.table("students").select("*").eq("student_id", student_id).execute()
-        student_name = student_res.data[0]["name"] if student_res.data else "Student"
-
-        # Return identical structure to data.ts
-        return {
-            "subjects": subjects,
-            "userProfile": {
-                "name": student_name,
-                "streakDays": 1,
-                "totalXp": 100,
-                "week": [
-                    {"label": "M", "state": "done"},
-                    {"label": "T", "state": "done"},
-                    {"label": "W", "state": "done"},
-                    {"label": "T", "state": "done"},
-                    {"label": "F", "state": "today"},
-                    {"label": "S", "state": "upcoming"},
-                    {"label": "S", "state": "upcoming"}
-                ]
-            }
-        }
-    except Exception as e:
-        print("Get Profile Error:", e)
-        raise HTTPException(status_code=500, detail=str(e))
+#
+# GET /profile/{student_id} used to live here, but it duplicated
+# src/app/api/student/dashboard (Next.js) with a diverging and partly
+# hardcoded implementation (fixed streakDays/totalXp/week, a "Generated
+# summary..." placeholder, mastery state computed with a different
+# threshold). That's now the one real implementation, shared with
+# src/app/api/profile/[studentId] via buildStudentProfile() in
+# src/lib/studentProgress.ts — don't re-add a second one here.
 
 class ProfileUpdateRequest(BaseModel):
     student_id: str
