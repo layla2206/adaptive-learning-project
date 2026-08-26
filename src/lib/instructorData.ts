@@ -33,6 +33,8 @@ export interface UploadedFile {
   status: FileStatus;
   progress?: number;
   errorReason?: string;
+  documentId?: string;
+  r2Key?: string;
 }
 
 // Real data for all of the above is fetched at render time from

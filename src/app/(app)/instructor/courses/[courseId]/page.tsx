@@ -109,6 +109,7 @@ export default function CourseUploadPage() {
       const formData = new FormData();
       formData.append("file", fileObj);
       formData.append("courseId", params.courseId);
+      // instructorId is derived server-side from the session in /api/upload — no need to send it.
 
       const response = await fetch("/api/upload", {
         method: "POST",
@@ -123,7 +124,18 @@ export default function CourseUploadPage() {
 
       const result = await response.json();
       setFiles((prev) =>
-        prev.map((f) => (f.id === id ? { ...f, id: result.documentId, status: "tagging", progress: 100 } : f))
+        prev.map((f) =>
+          f.id === id
+            ? {
+                ...f,
+                id: result.documentId,
+                status: "tagging",
+                progress: 100,
+                documentId: result.documentId,
+                r2Key: result.r2Key,
+              }
+            : f
+        )
       );
       setFileMap((prev) => {
         const next = new Map(prev);
@@ -227,17 +239,38 @@ export default function CourseUploadPage() {
 
   async function handleRemove(id: string) {
     const session = getSession();
+    const fileToRemove = files.find((f) => f.id === id);
+    setFiles((prev) => prev.filter((f) => f.id !== id));
     setConfirmRemoveId(null);
     if (!session) return;
+
+    // A file uploaded earlier in this session knows its r2Key — route the removal
+    // through /api/upload so FastAPI also cleans up R2 and the RAG chunks. A file
+    // fetched from a page load only has its document id, so fall back to a
+    // DB-only delete (r2Key isn't persisted anywhere to recover it from).
+    if (fileToRemove?.documentId && fileToRemove?.r2Key) {
+      try {
+        await fetch("/api/upload", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+          body: JSON.stringify({
+            documentId: fileToRemove.documentId,
+            r2Key: fileToRemove.r2Key,
+          }),
+        });
+      } catch (err) {
+        console.error("Failed to delete file from backend", err);
+      }
+      return;
+    }
+
     const res = await fetch(`/api/instructor/documents/${id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${session.token}` },
     });
     if (!res.ok) {
       showToast("Couldn't remove that file — try again.");
-      return;
     }
-    setFiles((prev) => prev.filter((f) => f.id !== id));
   }
 
   const inFlight = files.filter((f) => IN_FLIGHT.includes(f.status));

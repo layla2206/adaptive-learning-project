@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     topic_id VARCHAR(10),
     page_number INT,
     chunk_text TEXT NOT NULL,
-    embedding vector(1536),
+    embedding vector(768),
     FOREIGN KEY (document_id) REFERENCES documents(document_id),
     FOREIGN KEY (topic_id) REFERENCES topics(topic_id)
 );
