@@ -17,7 +17,7 @@ export function getRawSession(): string | null {
   return localStorage.getItem(STORAGE_KEY);
 }
 
-function parseSession(raw: string | null): Session | null {
+export function parseSession(raw: string | null): Session | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);

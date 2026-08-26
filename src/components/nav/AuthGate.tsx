@@ -2,7 +2,7 @@
 
 import { useEffect, useSyncExternalStore } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { getRawSession, getSession } from "@/lib/session";
+import { getRawSession, parseSession } from "@/lib/session";
 import { roleForPath, homeForRole } from "@/lib/roleForPath";
 
 function subscribe(callback: () => void) {
@@ -22,8 +22,8 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  useSyncExternalStore(subscribe, getRawSession, getServerSnapshot);
-  const session = getSession();
+  const rawSession = useSyncExternalStore(subscribe, getRawSession, getServerSnapshot);
+  const session = parseSession(rawSession);
   const requiredRole = roleForPath(pathname);
   const authorized = !!session && session.role === requiredRole;
 
