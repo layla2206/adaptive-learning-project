@@ -1,72 +1,9 @@
-import type { Subject, UserProfile } from "./types";
-
-export const initialSubjects: Subject[] = [
-  {
-    id: "dsa",
-    name: "Data Structures & Algorithms",
-    summary: "From arrays to graphs — build the intuition, not just the syntax.",
-    building: "citadel",
-    topics: [
-      { id: "arrays-strings", name: "Arrays & Strings", state: "mastered", progressPct: 100 },
-      { id: "trees", name: "Trees", state: "mastered", progressPct: 100 },
-      { id: "graphs", name: "Graphs", state: "in-progress", progressPct: 55 },
-      { id: "hashing", name: "Hashing", state: "locked", progressPct: 0 },
-      { id: "dynamic-programming", name: "Dynamic Programming", state: "locked", progressPct: 0 },
-    ],
-  },
-  {
-    id: "calculus",
-    name: "Calculus",
-    summary: "Limits through series, grounded in why the rules work.",
-    building: "observatory",
-    topics: [
-      { id: "limits", name: "Limits", state: "mastered", progressPct: 100 },
-      { id: "derivatives", name: "Derivatives", state: "mastered", progressPct: 100 },
-      { id: "integrals", name: "Integrals", state: "mastered", progressPct: 100 },
-      { id: "series", name: "Series", state: "in-progress", progressPct: 80 },
-    ],
-  },
-  {
-    id: "linear-algebra",
-    name: "Linear Algebra",
-    summary: "Vectors, matrices, and the transformations behind them.",
-    building: "crystal",
-    topics: [
-      { id: "vectors", name: "Vectors", state: "mastered", progressPct: 100 },
-      { id: "matrices", name: "Matrices", state: "in-progress", progressPct: 30 },
-      { id: "eigenvalues", name: "Eigenvalues", state: "locked", progressPct: 0 },
-      { id: "determinants", name: "Determinants", state: "locked", progressPct: 0 },
-    ],
-  },
-  {
-    id: "orgo",
-    name: "Organic Chemistry",
-    summary: "Reaction mechanisms explained, not memorized.",
-    building: "hextower",
-    topics: [
-      { id: "nomenclature", name: "Nomenclature", state: "in-progress", progressPct: 20 },
-      { id: "reactions", name: "Reactions", state: "locked", progressPct: 0 },
-      { id: "stereochemistry", name: "Stereochemistry", state: "locked", progressPct: 0 },
-      { id: "spectroscopy", name: "Spectroscopy", state: "locked", progressPct: 0 },
-    ],
-  },
-];
-
-export const userProfile: UserProfile = {
-  name: "Youssef",
-  streakDays: 12,
-  totalXp: 3420,
-  week: [
-    { label: "M", state: "done" },
-    { label: "T", state: "done" },
-    { label: "W", state: "done" },
-    { label: "T", state: "done" },
-    { label: "F", state: "today" },
-    { label: "S", state: "upcoming" },
-    { label: "S", state: "upcoming" },
-  ],
-};
-
+// Marketing placeholder copy for the public home page only — aspirational,
+// not user data, so it's exempt from the "no mock data" rule that applies
+// to everything behind login (dashboard, score, milestones, instructor
+// stats). Real per-account data is fetched via TutorStoreProvider (see
+// src/lib/store.tsx) and the /api/student, /api/instructor, /api/admin
+// dashboard routes.
 export const homeStats = [
   { value: "12,400+", label: "Diagnostics Run" },
   { value: "94%", label: "Mastery Rate" },

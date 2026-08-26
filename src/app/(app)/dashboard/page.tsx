@@ -11,11 +11,10 @@ import TagRow from "@/components/TagRow";
 import StreakChip from "@/components/StreakChip";
 import WeekDots from "@/components/WeekDots";
 import { PlusIcon } from "@/components/icons";
-import { userProfile } from "@/lib/data";
 import styles from "./page.module.css";
 
 export default function DashboardPage() {
-  const { subjects, userName } = useTutorStore();
+  const { subjects, userName, streakDays, totalXp, week, loading } = useTutorStore();
 
   const now = useMemo(() => new Date(), []);
   const featuredId = useMemo(() => {
@@ -40,12 +39,12 @@ export default function DashboardPage() {
 
       <Link href="/score" className={styles.hero} aria-label="View your score: weekly calendar and trophy cabinet">
         <div className={styles.heroLeft}>
-          <StreakChip days={userProfile.streakDays} />
-          <WeekDots days={userProfile.week} />
+          <StreakChip days={streakDays} />
+          <WeekDots days={week} />
         </div>
         <div className={styles.heroDivider} />
         <div className={styles.xpBlock}>
-          <div className={styles.xpValue}>{userProfile.totalXp.toLocaleString()}</div>
+          <div className={styles.xpValue}>{totalXp.toLocaleString()}</div>
           <div className={styles.xpLabel}>Total XP</div>
         </div>
       </Link>
@@ -53,6 +52,10 @@ export default function DashboardPage() {
       <div className={styles.sectionHead}>
         <h2>Your Subjects</h2>
       </div>
+
+      {!loading && subjects.length === 0 && (
+        <p className={styles.meta}>You&apos;re not enrolled in a subject yet — check with your instructor.</p>
+      )}
 
       <div className={styles.subjectGrid}>
         {subjects.map((subject) => {

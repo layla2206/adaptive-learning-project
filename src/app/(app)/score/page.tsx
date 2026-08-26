@@ -1,14 +1,13 @@
 "use client";
 
 import { useTutorStore } from "@/lib/store";
-import { userProfile } from "@/lib/data";
 import AppHeader from "@/components/AppHeader";
 import WeeklyCalendar from "@/components/score/WeeklyCalendar";
 import TrophyCabinet from "@/components/score/TrophyCabinet";
 import styles from "./page.module.css";
 
 export default function ScorePage() {
-  const { subjects, userName } = useTutorStore();
+  const { subjects, userName, streakDays } = useTutorStore();
 
   return (
     <div className={`shell ${styles.page}`}>
@@ -29,7 +28,7 @@ export default function ScorePage() {
       <div className={styles.section}>
         <p className="eyebrow">Achievements</p>
         <h2 className={styles.sectionTitle}>Trophy Cabinet</h2>
-        <TrophyCabinet subjects={subjects} streakDays={userProfile.streakDays} />
+        <TrophyCabinet subjects={subjects} streakDays={streakDays} />
       </div>
     </div>
   );

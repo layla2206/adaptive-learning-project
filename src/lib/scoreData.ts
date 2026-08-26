@@ -15,15 +15,6 @@ export function currentWeekLabel(): string {
   return `Week of ${monday.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 }
 
-// Mock "days ago within this week" a subject's lecture was completed — negative offsets
-// from today, clamped so a completion never lands in the future relative to "today."
-const COMPLETION_OFFSET: Record<string, number | null> = {
-  dsa: -2,
-  calculus: 0,
-  "linear-algebra": null,
-  orgo: null,
-};
-
 export interface WeeklyRow {
   subjectId: string;
   subjectName: string;
@@ -32,17 +23,12 @@ export interface WeeklyRow {
 }
 
 export function buildWeeklyRows(subjects: Subject[]): WeeklyRow[] {
-  const today = todayIndex();
-  return subjects.map((s) => {
-    const offset = COMPLETION_OFFSET[s.id] ?? null;
-    const completedDayIndex = offset === null ? null : Math.max(0, today + offset);
-    return {
-      subjectId: s.id,
-      subjectName: s.name,
-      completedDayIndex,
-      onTrack: completedDayIndex !== null,
-    };
-  });
+  return subjects.map((s) => ({
+    subjectId: s.id,
+    subjectName: s.name,
+    completedDayIndex: s.weeklyCompletion,
+    onTrack: s.weeklyCompletion !== null,
+  }));
 }
 
 export type BadgeIconKind = "shield" | "star" | "ribbon";

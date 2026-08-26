@@ -83,7 +83,7 @@ function ThinkingIndicator({ label }: { label: string }) {
 
 export default function TopicPage() {
   const params = useParams<{ subjectId: string; topicId: string }>();
-  const { subjects, userName, markTopicMastered, setTopicProgress } = useTutorStore();
+  const { subjects, userName, loading, markTopicMastered, setTopicProgress } = useTutorStore();
   const subject = subjects.find((s) => s.id === params.subjectId);
   const topic = subject?.topics.find((t) => t.id === params.topicId);
 
@@ -95,6 +95,10 @@ export default function TopicPage() {
   const [stepAnswers, setStepAnswers] = useState(["", "", ""]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [expandedCitations, setExpandedCitations] = useState<Set<string>>(new Set());
+
+  if (loading) {
+    return <div className={`shell ${styles.page}`} />;
+  }
 
   if (!subject || !topic) {
     return (

@@ -13,10 +13,14 @@ import styles from "./page.module.css";
 
 export default function SubjectPage() {
   const params = useParams<{ subjectId: string }>();
-  const { subjects, userName } = useTutorStore();
+  const { subjects, userName, loading } = useTutorStore();
   const subject = subjects.find((s) => s.id === params.subjectId);
 
   const { celebrateIndex, justCompletedSubject } = useMasteryCelebration(subject);
+
+  if (loading) {
+    return <div className={`shell ${styles.page}`} />;
+  }
 
   if (!subject) {
     return (

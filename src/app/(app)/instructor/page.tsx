@@ -1,19 +1,48 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatEyebrowDate, initials, greetingForHour } from "@/lib/utils";
-import { instructorProfile, instructorStats, courses, stuckTopicsByCourse } from "@/lib/instructorData";
+import { getSession } from "@/lib/session";
+import type { Course, StuckTopic } from "@/lib/instructorData";
 import Card from "@/components/Card";
 import ArrowButton from "@/components/ArrowButton";
 import ProgressRing from "@/components/ProgressRing";
 import MasteryBar from "@/components/MasteryBar";
-import StatsStrip from "@/components/StatsStrip";
+import StatsStrip, { type Stat } from "@/components/StatsStrip";
 import StuckTable from "@/components/instructor/StuckTable";
 import { UploadIcon, UsersIcon } from "@/components/icons";
 import styles from "./page.module.css";
 
+interface InstructorDashboard {
+  instructorName: string;
+  stats: Stat[];
+  courses: Course[];
+  stuckTopicsByCourse: Record<string, StuckTopic[]>;
+}
+
 export default function InstructorDashboardPage() {
   const now = useMemo(() => new Date(), []);
+  const [dashboard, setDashboard] = useState<InstructorDashboard | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      const session = getSession();
+      if (!session) {
+        setLoading(false);
+        return;
+      }
+      const res = await fetch("/api/instructor/dashboard", { headers: { Authorization: `Bearer ${session.token}` } });
+      setDashboard(res.ok ? await res.json() : null);
+      setLoading(false);
+    }
+    queueMicrotask(load);
+  }, []);
+
+  const instructorName = dashboard?.instructorName ?? "";
+  const stats = dashboard?.stats ?? [];
+  const courses = dashboard?.courses ?? [];
+  const stuckTopicsByCourse = dashboard?.stuckTopicsByCourse ?? {};
 
   return (
     <div className={`shell ${styles.page}`}>
@@ -21,16 +50,16 @@ export default function InstructorDashboardPage() {
         <div>
           <p className="eyebrow">{formatEyebrowDate(now)}</p>
           <h1 className={styles.greeting}>
-            {greetingForHour(now.getHours())}, {instructorProfile.name}
+            {greetingForHour(now.getHours())}, {instructorName}
           </h1>
         </div>
-        <div className={styles.avatar} title={instructorProfile.name}>
-          {initials(instructorProfile.name)}
+        <div className={styles.avatar} title={instructorName}>
+          {initials(instructorName || "?")}
         </div>
       </header>
 
       <div className={styles.statsWrap}>
-        <StatsStrip stats={instructorStats} />
+        <StatsStrip stats={stats} />
       </div>
 
       <div className={styles.sectionHead}>
@@ -66,39 +95,32 @@ export default function InstructorDashboardPage() {
       <div id="courses" className={styles.sectionHead}>
         <h2>Your Courses</h2>
       </div>
+
+      {!loading && courses.length === 0 && <p className={styles.meta}>No courses yet.</p>}
+
       <div className={styles.courseGrid}>
-        {courses.map((course) => {
-          const uploadPct = Math.round((course.lecturesUploaded / course.lecturesPlanned) * 100);
-          return (
-            <Card
-              key={course.id}
-              href={`/instructor/courses/${course.id}`}
-              flagged={course.flagged}
-              className={styles.courseCard}
-            >
-              <div className={styles.ringWrap}>
-                <ProgressRing percent={uploadPct} size={52} strokeWidth={5} inverted={course.flagged} />
-              </div>
-              <h3 className={styles.courseName}>{course.name}</h3>
-              <p className={styles.roster}>{course.rosterSize} students enrolled</p>
-              <div className={styles.barWrap}>
-                <MasteryBar percent={course.avgMastery} inverted={course.flagged} />
-              </div>
-              <p className={styles.meta}>
-                {course.lecturesUploaded} / {course.lecturesPlanned} Lectures
-              </p>
-              <div className={styles.cardFoot}>
-                <ArrowButton inverted={course.flagged} />
-              </div>
-            </Card>
-          );
-        })}
+        {courses.map((course) => (
+          <Card key={course.id} href={`/instructor/courses/${course.id}`} flagged={course.flagged} className={styles.courseCard}>
+            <div className={styles.ringWrap}>
+              <ProgressRing percent={course.avgMastery} size={52} strokeWidth={5} inverted={course.flagged} />
+            </div>
+            <h3 className={styles.courseName}>{course.name}</h3>
+            <p className={styles.roster}>{course.rosterSize} students enrolled</p>
+            <div className={styles.barWrap}>
+              <MasteryBar percent={course.avgMastery} inverted={course.flagged} />
+            </div>
+            <p className={styles.meta}>{course.lecturesUploaded} Lectures Uploaded</p>
+            <div className={styles.cardFoot}>
+              <ArrowButton inverted={course.flagged} />
+            </div>
+          </Card>
+        ))}
       </div>
 
       <div id="insights" className={styles.sectionHead}>
         <h2>Where Students Are Stuck</h2>
       </div>
-      <StuckTable courses={courses} stuckTopicsByCourse={stuckTopicsByCourse} />
+      {courses.length > 0 && <StuckTable courses={courses} stuckTopicsByCourse={stuckTopicsByCourse} />}
     </div>
   );
 }

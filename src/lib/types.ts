@@ -15,6 +15,8 @@ export interface Subject {
   summary: string;
   building: BuildingKind;
   topics: Topic[];
+  /** Day index (0=Mon..6=Sun) this week a lecture in this subject was completed, or null if none yet. */
+  weeklyCompletion: number | null;
 }
 
 export type DayState = "done" | "today" | "upcoming";

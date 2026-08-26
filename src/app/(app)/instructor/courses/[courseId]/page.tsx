@@ -1,12 +1,20 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { courses, uploadedFilesByCourse, instructorProfile, type UploadedFile } from "@/lib/instructorData";
+import { getSession } from "@/lib/session";
+import type { UploadedFile } from "@/lib/instructorData";
 import AppHeader from "@/components/AppHeader";
 import { UploadIcon, CheckIcon, RefreshIcon } from "@/components/icons";
 import styles from "./page.module.css";
+
+interface CourseInfo {
+  id: string;
+  name: string;
+  rosterSize: number;
+  instructorName: string;
+}
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".pptx"];
 const MAX_SIZE_BYTES = 25 * 1024 * 1024;
@@ -32,13 +40,14 @@ function validateFile(file: File): string | null {
   return ok ? null : `PDF, DOCX, or PPTX only, up to 25MB — ${file.name} wasn't added.`;
 }
 
-const IN_FLIGHT: UploadedFile["status"][] = ["uploading", "tagging", "failed"];
+const IN_FLIGHT: UploadedFile["status"][] = ["uploading", "failed"];
 
 export default function CourseUploadPage() {
   const params = useParams<{ courseId: string }>();
-  const course = courses.find((c) => c.id === params.courseId);
+  const [course, setCourse] = useState<CourseInfo | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const [files, setFiles] = useState<UploadedFile[]>(() => uploadedFilesByCourse[params.courseId] ?? []);
+  const [files, setFiles] = useState<UploadedFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [rejections, setRejections] = useState<string[]>([]);
   const [taggingDraft, setTaggingDraft] = useState<Record<string, string>>({});
@@ -51,7 +60,26 @@ export default function CourseUploadPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  if (!course) {
+  useEffect(() => {
+    async function load() {
+      const session = getSession();
+      if (!session) {
+        setLoading(false);
+        return;
+      }
+      const headers = { Authorization: `Bearer ${session.token}` };
+      const [courseData, fileData] = await Promise.all([
+        fetch(`/api/instructor/courses/${params.courseId}`, { headers }).then((r) => (r.ok ? r.json() : null)),
+        fetch(`/api/instructor/courses/${params.courseId}/files`, { headers }).then((r) => (r.ok ? r.json() : [])),
+      ]);
+      setCourse(courseData);
+      setFiles(fileData ?? []);
+      setLoading(false);
+    }
+    queueMicrotask(load);
+  }, [params.courseId]);
+
+  if (!loading && !course) {
     return (
       <div className={`shell ${styles.page}`}>
         <div className={styles.notFound}>
@@ -61,6 +89,9 @@ export default function CourseUploadPage() {
       </div>
     );
   }
+  if (!course) {
+    return <div className={`shell ${styles.page}`} />;
+  }
 
   function showToast(message: string) {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -69,6 +100,8 @@ export default function CourseUploadPage() {
   }
 
   async function uploadToR2(id: string, fileObj: File) {
+    const session = getSession();
+    if (!session) return;
     try {
       // Simulate incremental progress UI while upload is starting
       setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, progress: 35 } : f)));
@@ -76,10 +109,10 @@ export default function CourseUploadPage() {
       const formData = new FormData();
       formData.append("file", fileObj);
       formData.append("courseId", params.courseId);
-      formData.append("instructorId", "inst-1");
 
       const response = await fetch("/api/upload", {
         method: "POST",
+        headers: { Authorization: `Bearer ${session.token}` },
         body: formData,
       });
 
@@ -90,20 +123,20 @@ export default function CourseUploadPage() {
 
       const result = await response.json();
       setFiles((prev) =>
-        prev.map((f) =>
-          f.id === id
-            ? { ...f, status: "tagging", progress: 100 }
-            : f
-        )
+        prev.map((f) => (f.id === id ? { ...f, id: result.documentId, status: "tagging", progress: 100 } : f))
       );
-    } catch (err: any) {
+      setFileMap((prev) => {
+        const next = new Map(prev);
+        const fileEntry = next.get(id);
+        next.delete(id);
+        if (fileEntry) next.set(result.documentId, fileEntry);
+        return next;
+      });
+    } catch (err) {
       console.error("Upload error:", err);
+      const message = err instanceof Error ? err.message : "Upload failed — try again.";
       setFiles((prev) =>
-        prev.map((f) =>
-          f.id === id
-            ? { ...f, status: "failed", progress: 100, errorReason: err.message || "Upload failed — try again." }
-            : f
-        )
+        prev.map((f) => (f.id === id ? { ...f, status: "failed", progress: 100, errorReason: message } : f))
       );
     }
   }
@@ -139,15 +172,33 @@ export default function CourseUploadPage() {
     uploadToR2(id, fileObj);
   }
 
+  async function patchLectureNumber(documentId: string, lectureNumber: number): Promise<boolean> {
+    const session = getSession();
+    if (!session) return false;
+    const res = await fetch(`/api/instructor/documents/${documentId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+      body: JSON.stringify({ lectureNumber }),
+    });
+    return res.ok;
+  }
+
   function handleTagChange(id: string, value: string) {
     setTaggingDraft((prev) => ({ ...prev, [id]: value }));
   }
 
-  function handleConfirmTag(id: string) {
+  async function handleConfirmTag(id: string) {
     const value = taggingDraft[id];
     if (!value || !value.trim()) return;
+    const lectureNumber = Number(value);
     const fileName = files.find((f) => f.id === id)?.name ?? "File";
-    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, lectureNumber: Number(value), status: "ready" } : f)));
+
+    const ok = await patchLectureNumber(id, lectureNumber);
+    if (!ok) {
+      showToast("Couldn't save that lecture number — try again.");
+      return;
+    }
+    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, lectureNumber, status: "ready" } : f)));
     setTaggingDraft((prev) => {
       const next = { ...prev };
       delete next[id];
@@ -161,16 +212,32 @@ export default function CourseUploadPage() {
     setRetagLecture(String(file.lectureNumber));
   }
 
-  function handleConfirmRetag() {
+  async function handleConfirmRetag() {
     if (!retagId || !retagLecture.trim()) return;
-    setFiles((prev) => prev.map((f) => (f.id === retagId ? { ...f, lectureNumber: Number(retagLecture) } : f)));
+    const lectureNumber = Number(retagLecture);
+    const ok = await patchLectureNumber(retagId, lectureNumber);
+    if (!ok) {
+      showToast("Couldn't save that lecture number — try again.");
+      return;
+    }
+    setFiles((prev) => prev.map((f) => (f.id === retagId ? { ...f, lectureNumber } : f)));
     setRetagId(null);
     setRetagLecture("");
   }
 
-  function handleRemove(id: string) {
-    setFiles((prev) => prev.filter((f) => f.id !== id));
+  async function handleRemove(id: string) {
+    const session = getSession();
     setConfirmRemoveId(null);
+    if (!session) return;
+    const res = await fetch(`/api/instructor/documents/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${session.token}` },
+    });
+    if (!res.ok) {
+      showToast("Couldn't remove that file — try again.");
+      return;
+    }
+    setFiles((prev) => prev.filter((f) => f.id !== id));
   }
 
   const inFlight = files.filter((f) => IN_FLIGHT.includes(f.status));
@@ -310,7 +377,7 @@ export default function CourseUploadPage() {
       <AppHeader
         eyebrow="Course"
         title={course.name}
-        userName={instructorProfile.name}
+        userName={course.instructorName}
         backHref="/instructor"
         backLabel="Instructor Dashboard"
       />
