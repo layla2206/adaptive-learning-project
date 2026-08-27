@@ -13,6 +13,8 @@ from supabase import create_client, Client
 import PyPDF2
 from google import genai
 from google.genai import types
+from answer_generation import generate_answer
+from citations import map_chunk, map_citations
 
 # Load .env from the parent directory — this repo keeps real config in
 # .env (not .env.local, which doesn't exist here), so point dotenv at that.
@@ -56,6 +58,11 @@ gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_
 if not gemini_api_key:
     raise ValueError("Missing Gemini API Key in environment.")
 gemini_client = genai.Client(api_key=gemini_api_key)
+
+
+def generate_grounded_answer(question: str, chunks: List[dict]) -> str:
+    """Generate an answer using the production Gemini client and retrieved context."""
+    return generate_answer(question, chunks, gemini_client)
 
 
 def parse_document(file_bytes: bytes, file_type: str) -> str:
@@ -702,9 +709,23 @@ async def generate_retry(req: RetryGenerateRequest):
         )
         attempt_number = (retries.count or 0) + 1
         format_used = "Worked Example" if attempt_number % 2 == 1 else "Hands-on Task"
-        chunks_res = supabase.table("chunks").select("chunk_id, chunk_text").eq("topic_id", req.topic_id).limit(8).execute()
+        chunks_res = (
+            supabase.table("chunks")
+            .select("chunk_id, document_id, chunk_text, page_number, documents(file_name)")
+            .eq("topic_id", req.topic_id)
+            .limit(8)
+            .execute()
+        )
         if not chunks_res.data:
             raise HTTPException(status_code=422, detail="No learning content found for this topic")
+
+        chunks = []
+        for chunk in chunks_res.data:
+            document = chunk.get("documents") or {}
+            chunks.append(map_chunk({
+                **chunk,
+                "document_title": document.get("file_name"),
+            }))
 
         format_instruction = (
             "Produce a fully worked, step-by-step example solved using the topic's method."
@@ -717,7 +738,7 @@ Return ONLY strict JSON: {{"content": "...", "citedChunkIds": ["chunk_id", ...]}
 Only cite chunk IDs included below.
 
 Learning content:
-{chr(10).join(f"[{chunk['chunk_id']}] {chunk['chunk_text']}" for chunk in chunks_res.data)}"""
+{chr(10).join(f"[{chunk['chunk_id']}] {chunk['chunk_text']}" for chunk in chunks)}"""
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
@@ -726,10 +747,11 @@ Learning content:
         generated = parse_gemini_json(response)
         content = generated.get("content")
         cited_ids = generated.get("citedChunkIds", [])
-        valid_ids = {chunk["chunk_id"] for chunk in chunks_res.data}
+        valid_ids = {chunk["chunk_id"] for chunk in chunks}
         if not isinstance(content, str) or not content.strip() or not isinstance(cited_ids, list):
             raise HTTPException(status_code=502, detail="AI returned invalid retry content")
         cited_ids = [chunk_id for chunk_id in cited_ids if isinstance(chunk_id, str) and chunk_id in valid_ids]
+        citations = map_citations(chunks, cited_ids)
         supabase.table("retry_attempts").insert({
             "retry_id": short_id("rty"),
             "student_id": req.student_id,
@@ -739,7 +761,14 @@ Learning content:
             "result": None,
         }).execute()
         append_session_message(session_id, "ai", content)
-        return {"sessionId": session_id, "format": format_used, "content": content, "citedChunkIds": cited_ids}
+        return {
+            "sessionId": session_id,
+            "format": format_used,
+            "content": content,
+            "citedChunkIds": cited_ids,
+            "chunks": chunks,
+            "citations": citations,
+        }
     except HTTPException:
         raise
     except Exception as exc:

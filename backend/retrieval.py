@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from supabase import create_client, Client
+from citations import map_chunk
 
 # Needed in case this file is run standalone (not via main.py, which already
 # calls load_dotenv). This repo keeps real config in .env, not .env.local.
@@ -90,7 +91,7 @@ async def retrieve_context(
             "match_course_id": course_id,
         }
         res = supabase.rpc("match_chunks", rpc_params).execute()
-        return res.data or []
+        return [map_chunk(chunk) for chunk in (res.data or [])]
 
     except Exception as e:
         logger.error(f"Supabase retrieval RPC failed (topic={topic_id}, course={course_id}): {e}")
