@@ -1,6 +1,7 @@
 import os
 import uuid
 import time
+import math
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -11,6 +12,7 @@ import boto3
 from supabase import create_client, Client
 import PyPDF2
 from google import genai
+from google.genai import types
 
 # Load .env from the parent directory — this repo keeps real config in
 # .env (not .env.local, which doesn't exist here), so point dotenv at that.
@@ -60,7 +62,7 @@ def parse_document(file_bytes: bytes, file_type: str) -> str:
     """Extracts text from PDF or raw text files."""
     text = ""
     file_type = file_type.lower().replace(".", "")
-    
+
     if file_type == "pdf":
         from io import BytesIO
         reader = PyPDF2.PdfReader(BytesIO(file_bytes))
@@ -72,8 +74,12 @@ def parse_document(file_bytes: bytes, file_type: str) -> str:
         text = file_bytes.decode("utf-8")
     else:
         raise ValueError(f"Unsupported file type for parsing: {file_type}")
-    
-    return text
+
+    # PyPDF2 occasionally emits embedded null characters from certain PDF
+    # font/encoding quirks -- Postgres text columns reject those outright
+    # ("unsupported Unicode escape sequence"), which would otherwise crash
+    # the chunk insert after embeddings have already been generated.
+    return text.replace(chr(0), "")
 
 def chunk_text(text: str, chunk_size: int = 600, overlap: int = 100) -> List[dict]:
     """Splits text into chunks with sliding window overlap."""
@@ -111,26 +117,52 @@ def chunk_text(text: str, chunk_size: int = 600, overlap: int = 100) -> List[dic
         
     return chunks
 
-def generate_embeddings(texts: List[str]) -> List[List[float]]:
-    """Generates embeddings using Google Gemini text-embedding-004."""
+EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_DIMENSIONS = 768
+
+
+def _normalize(vector: List[float]) -> List[float]:
+    """gemini-embedding-001 requires manual L2 normalization when requesting a
+    non-default (non-3072) output_dimensionality — unlike gemini-embedding-2,
+    it doesn't do this for you."""
+    norm = math.sqrt(sum(x * x for x in vector))
+    if norm == 0:
+        return vector
+    return [x / norm for x in vector]
+
+
+def generate_embeddings(texts: List[str], task_type: str = "RETRIEVAL_DOCUMENT") -> List[List[float]]:
+    """Generates embeddings using Google Gemini gemini-embedding-001.
+
+    task_type is asymmetric: chunks stored for retrieval must use
+    RETRIEVAL_DOCUMENT, and the incoming question at query time must use
+    RETRIEVAL_QUERY — see embed_query() below.
+    """
     if not texts:
         return []
-    
+
     # Gemini batchEmbedContents analog using Python SDK
     results = []
     BATCH_SIZE = 50
     for i in range(0, len(texts), BATCH_SIZE):
         batch = texts[i:i + BATCH_SIZE]
-        # In genai SDK, embed_content can take a list of strings
         response = gemini_client.models.embed_content(
-            model='text-embedding-004',
-            contents=batch
+            model=EMBEDDING_MODEL,
+            contents=batch,
+            config=types.EmbedContentConfig(
+                output_dimensionality=EMBEDDING_DIMENSIONS,
+                task_type=task_type,
+            ),
         )
-        # Response contains embeddings list
         for emb in response.embeddings:
-            results.append(emb.values)
-            
+            results.append(_normalize(emb.values))
+
     return results
+
+
+def embed_query(text: str) -> List[float]:
+    """Embeds a single incoming question for retrieval against match_chunks."""
+    return generate_embeddings([text], task_type="RETRIEVAL_QUERY")[0]
 
 
 @app.post("/upload")
