@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { AccountStatus, InstructorAccount } from "@/lib/adminData";
 import { PlusIcon } from "@/components/icons";
 import { getSession } from "@/lib/session";
@@ -11,11 +11,16 @@ export default function InstructorTable({ instructors }: { instructors: Instruct
   const [statusById, setStatusById] = useState<Record<string, AccountStatus>>(() =>
     Object.fromEntries(instructors.map((i) => [i.id, i.status]))
   );
-
-  useEffect(() => {
+  // Resync local state when the fetched `instructors` prop changes — done during
+  // render (not a useEffect) per React's guidance for adjusting state from props,
+  // since the effect version was a synchronous setState-in-effect that also meant
+  // the table stayed empty for a render after the real data actually arrived.
+  const [prevInstructors, setPrevInstructors] = useState(instructors);
+  if (instructors !== prevInstructors) {
+    setPrevInstructors(instructors);
     setAccounts(instructors);
     setStatusById(Object.fromEntries(instructors.map((i) => [i.id, i.status])));
-  }, [instructors]);
+  }
 
   const [formOpen, setFormOpen] = useState(false);
   const [name, setName] = useState("");

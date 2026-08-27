@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { AccountStatus, InstructorAccount, PlatformCourse } from "@/lib/adminData";
 import { PlusIcon } from "@/components/icons";
 import { getSession } from "@/lib/session";
@@ -17,11 +17,14 @@ export default function CourseTable({
   const [statusById, setStatusById] = useState<Record<string, AccountStatus>>(() =>
     Object.fromEntries(courses.map((c) => [c.id, c.status]))
   );
-
-  useEffect(() => {
+  // Resync local state when the fetched `courses` prop changes — done during
+  // render (not a useEffect) per React's guidance for adjusting state from props.
+  const [prevCourses, setPrevCourses] = useState(courses);
+  if (courses !== prevCourses) {
+    setPrevCourses(courses);
     setAllCourses(courses);
     setStatusById(Object.fromEntries(courses.map((c) => [c.id, c.status])));
-  }, [courses]);
+  }
 
   const [formOpen, setFormOpen] = useState(false);
   const [courseId, setCourseId] = useState("");
