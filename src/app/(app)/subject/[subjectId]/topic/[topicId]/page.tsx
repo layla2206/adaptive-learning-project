@@ -8,6 +8,8 @@ import { getSession } from "@/lib/session";
 import { announceMastery } from "@/lib/milestoneAnnounce";
 import AppHeader from "@/components/AppHeader";
 import Confetti from "@/components/Confetti";
+import MermaidDiagram from "@/components/MermaidDiagram";
+import TutorMarkdown from "@/components/TutorMarkdown";
 import { ArrowIcon, CheckIcon, RefreshIcon } from "@/components/icons";
 import styles from "./page.module.css";
 
@@ -36,6 +38,7 @@ interface Message {
   tag?: string;
   paragraphs: string[];
   citations?: Citation[];
+  diagram?: string;
 }
 
 const BASE_STEPS = ["Diagnose", "Explain", "Check"];
@@ -304,21 +307,30 @@ export default function TopicPage() {
       if (!retryRes.ok) throw new Error(retryData.error || "Something went wrong");
       if (retryData.sessionId) setSessionId(retryData.sessionId);
 
-      // /retry/generate returns real citations, but (unlike /query) doesn't cite
-      // inline in the content text — nothing for renderCite's [\d] regex to turn
-      // into a clickable chip. Append the marks so the citation data is actually
-      // reachable instead of silently unused.
       const citations: Citation[] = retryData.citations ?? [];
-      const withSources = citations.length
-        ? `${retryData.content}\n\nSources: ${citations.map((c: Citation) => c.mark).join(" ")}`
-        : retryData.content;
 
-      pushMessage({
-        role: "tutor",
-        tag: "Alternate Explanation",
-        paragraphs: [withSources],
-        citations,
-      });
+      if (retryData.isDiagram) {
+        // Diagram/Mind Map formats return Mermaid syntax, not prose — nothing
+        // for renderCite's [\d] regex to attach a citation chip to, so sources
+        // are listed as a plain caption instead of inline markers.
+        pushMessage({
+          role: "tutor",
+          tag: retryData.format,
+          paragraphs: citations.length
+            ? [`Sources: ${citations.map((c: Citation) => `${c.mark} ${c.source}`).join(" · ")}`]
+            : [],
+          diagram: retryData.content,
+        });
+      } else {
+        // Prose formats now cite inline (backend renumbers to match citations,
+        // same as /query) — renderCite's [\d] regex picks the markers up directly.
+        pushMessage({
+          role: "tutor",
+          tag: retryData.format,
+          paragraphs: [retryData.content],
+          citations,
+        });
+      }
       setStage("retry-shown");
     } catch {
       pushMessage({ role: "tutor", paragraphs: ["Something went wrong checking that — try again in a moment."] });
@@ -393,28 +405,6 @@ export default function TopicPage() {
             ? 3
             : steps.length;
 
-  function renderCite(text: string, citations: Citation[] | undefined, messageId: string) {
-    const parts = text.split(/(\[\d\])/g);
-    return parts.map((part, i) => {
-      const citation = /^\[\d\]$/.test(part) ? citations?.find((c) => c.mark === part) : undefined;
-      if (citation) {
-        const key = `${messageId}:${citation.mark}`;
-        const isOpen = expandedCitations.has(key);
-        return (
-          <button
-            key={i}
-            type="button"
-            className={`${styles.citeChip} ${isOpen ? styles.citeChipOpen : ""}`}
-            onClick={() => toggleCitation(key)}
-            aria-expanded={isOpen}
-          >
-            {part}
-          </button>
-        );
-      }
-      return <span key={i}>{part}</span>;
-    });
-  }
 
   const diagSummary = summarizeDiagnosticScore(diagScore ?? "0/0");
 
@@ -525,9 +515,23 @@ export default function TopicPage() {
           <div key={m.id} className={`${styles.bubbleRow} ${m.role === "user" ? styles.user : ""}`}>
             <div className={styles.bubble}>
               {m.tag && <div className={styles.bubbleTag}>{m.tag}</div>}
-              {m.paragraphs.map((p, i) => (
-                <p key={i}>{renderCite(p, m.citations, m.id)}</p>
-              ))}
+              {m.diagram && <MermaidDiagram code={m.diagram} />}
+              {m.paragraphs.map((p, i) =>
+                m.role === "tutor" ? (
+                  <TutorMarkdown
+                    key={i}
+                    text={p}
+                    citations={m.citations}
+                    messageId={m.id}
+                    expandedCitations={expandedCitations}
+                    onToggleCitation={toggleCitation}
+                    citeChipClassName={styles.citeChip}
+                    citeChipOpenClassName={styles.citeChipOpen}
+                  />
+                ) : (
+                  <p key={i}>{p}</p>
+                )
+              )}
               {m.citations
                 ?.filter((c) => expandedCitations.has(`${m.id}:${c.mark}`))
                 .map((c) => (
