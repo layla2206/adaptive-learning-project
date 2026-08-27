@@ -2,6 +2,13 @@ import logging
 import os
 from typing import Any, Iterable
 
+from dotenv import load_dotenv
+
+# Defensive, same as retrieval.py: main.py imports this module before it
+# calls its own load_dotenv(), so RAG_SIMILARITY_THRESHOLD below would
+# otherwise silently read an empty environment and always fall back to the
+# hardcoded default, no matter what .env actually says.
+load_dotenv(dotenv_path="../.env")
 
 logger = logging.getLogger("answer_generation")
 NO_CONTEXT_ANSWER = "I don't have enough context to answer that question."
@@ -60,7 +67,7 @@ Learning content:
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
         )
     except TimeoutError as exc:

@@ -13,8 +13,9 @@ from supabase import create_client, Client
 import PyPDF2
 from google import genai
 from google.genai import types
-from answer_generation import generate_answer
+from answer_generation import generate_answer, AnswerGenerationError, NO_CONTEXT_ANSWER
 from citations import map_chunk, map_citations
+from retrieval import retrieve_context
 
 # Load .env from the parent directory — this repo keeps real config in
 # .env (not .env.local, which doesn't exist here), so point dotenv at that.
@@ -362,7 +363,7 @@ async def generate_diagnostic(req: DiagnosticGenerateReq):
         """
         
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
@@ -614,7 +615,7 @@ Student submissions:
 {chr(10).join(f"{label}: {text}" for _, label, text in submissions)}"""
 
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
             config={"response_mime_type": "application/json"},
         )
@@ -740,7 +741,7 @@ Only cite chunk IDs included below.
 Learning content:
 {chr(10).join(f"[{chunk['chunk_id']}] {chunk['chunk_text']}" for chunk in chunks)}"""
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
             config={"response_mime_type": "application/json"},
         )
@@ -774,3 +775,55 @@ Learning content:
     except Exception as exc:
         print("Retry Generation Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to generate retry content") from exc
+
+
+class QueryRequest(BaseModel):
+    student_id: str
+    course_id: str
+    topic_id: str
+    question: str
+    session_id: Optional[str] = None
+
+
+@app.post("/query")
+async def query_content(req: QueryRequest):
+    try:
+        session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
+        chunks = await retrieve_context(req.question, topic_id=req.topic_id, course_id=req.course_id)
+
+        try:
+            raw_answer = generate_answer(req.question, chunks, gemini_client)
+        except AnswerGenerationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        if raw_answer == NO_CONTEXT_ANSWER or not chunks:
+            append_session_message(session_id, "student", req.question)
+            append_session_message(session_id, "ai", raw_answer)
+            return {"sessionId": session_id, "answer": raw_answer, "citations": []}
+
+        # generate_answer cites chunks by their real chunk_id (e.g. "[4d5b6eda-0153-4]"),
+        # but the frontend only recognizes single-digit markers like [1]/[2] and matches
+        # them against citation.mark exactly (see renderCite in the topic page) — so the
+        # text and the citation list have to be renumbered together, not independently.
+        import re
+
+        known_ids = {chunk.get("chunk_id") for chunk in chunks}
+        cited_ids_in_order = []
+        for match in re.findall(r"\[([^\[\]]+)\]", raw_answer):
+            if match in known_ids and match not in cited_ids_in_order:
+                cited_ids_in_order.append(match)
+
+        citations = map_citations(chunks, cited_ids_in_order)
+
+        answer = raw_answer
+        for citation, original_id in zip(citations, cited_ids_in_order):
+            answer = answer.replace(f"[{original_id}]", citation["mark"])
+
+        append_session_message(session_id, "student", req.question)
+        append_session_message(session_id, "ai", answer)
+        return {"sessionId": session_id, "answer": answer, "citations": citations}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("Query Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to answer the question") from exc

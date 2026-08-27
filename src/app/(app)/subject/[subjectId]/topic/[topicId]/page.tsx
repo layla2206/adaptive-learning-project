@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useTutorStore } from "@/lib/store";
+import { getSession } from "@/lib/session";
 import { announceMastery } from "@/lib/milestoneAnnounce";
 import AppHeader from "@/components/AppHeader";
 import Confetti from "@/components/Confetti";
@@ -38,12 +39,12 @@ interface Message {
 }
 
 const BASE_STEPS = ["Diagnose", "Explain", "Check"];
-const THINKING_MS = 900;
 
-const DIAGNOSE_QUESTIONS = [
-  { prompt: (topic: string) => `Have you worked with ${topic} before?`, options: ["Never", "A little", "Pretty comfortable"] },
-  { prompt: () => "How confident do you feel about it right now?", options: ["Not confident", "Somewhat", "Fairly confident"] },
-];
+interface DiagnosticQuestion {
+  question_id: string;
+  text: string;
+  options: string[];
+}
 
 const STEP_PROMPTS = [
   "What do you start from?",
@@ -51,13 +52,12 @@ const STEP_PROMPTS = [
   "What's the result, and how do you know it's right?",
 ];
 
-function summarizeDiagnostic(answers: string[]): { headline: string; sub: string } {
-  const score = answers.reduce((sum, ans, i) => {
-    const idx = DIAGNOSE_QUESTIONS[i]?.options.indexOf(ans) ?? -1;
-    return sum + Math.max(idx, 0);
-  }, 0);
-  if (score >= 3) return { headline: "Starting from a solid base.", sub: "We'll move quickly through the fundamentals and spend more time on the edge cases." };
-  if (score >= 1) return { headline: "Starting with some familiarity.", sub: "We'll ground the parts you've half-seen before and build from there." };
+function summarizeDiagnosticScore(score: string): { headline: string; sub: string } {
+  const [correctStr, totalStr] = score.split("/");
+  const total = Number(totalStr);
+  const pct = total > 0 ? Number(correctStr) / total : 0;
+  if (pct >= 1) return { headline: "Starting from a solid base.", sub: "We'll move quickly through the fundamentals and spend more time on the edge cases." };
+  if (pct > 0) return { headline: "Starting with some familiarity.", sub: "We'll ground the parts you've half-seen before and build from there." };
   return { headline: "Starting fresh — exactly what this step is for.", sub: "No assumptions — the explanation will build the idea from the ground up." };
 }
 
@@ -88,13 +88,56 @@ export default function TopicPage() {
   const topic = subject?.topics.find((t) => t.id === params.topicId);
 
   const [stage, setStage] = useState<Stage>("diagnose");
+  const [diagQuestions, setDiagQuestions] = useState<DiagnosticQuestion[] | null>(null);
+  const [diagLoading, setDiagLoading] = useState(true);
+  const [diagError, setDiagError] = useState<string | null>(null);
   const [diagIdx, setDiagIdx] = useState(0);
-  const [diagAnswers, setDiagAnswers] = useState<string[]>([]);
+  const [diagAnswers, setDiagAnswers] = useState<{ question_id: string; student_answer: string }[]>([]);
+  const [diagScore, setDiagScore] = useState<string | null>(null);
   const [hasRetried, setHasRetried] = useState(false);
   const [input, setInput] = useState("");
   const [stepAnswers, setStepAnswers] = useState(["", "", ""]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [expandedCitations, setExpandedCitations] = useState<Set<string>>(new Set());
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!topic) return;
+    const topicId = topic.id;
+    let cancelled = false;
+
+    async function loadQuestions() {
+      setDiagLoading(true);
+      setDiagError(null);
+      const session = getSession();
+      if (!session) {
+        if (!cancelled) {
+          setDiagError("You'll need to be signed in to start the diagnostic — try refreshing.");
+          setDiagLoading(false);
+        }
+        return;
+      }
+      try {
+        const response = await fetch("/api/diagnostic/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+          body: JSON.stringify({ topic_id: topicId }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) throw new Error(data.error || "Something went wrong");
+        if (!cancelled) setDiagQuestions(data.questions ?? []);
+      } catch {
+        if (!cancelled) setDiagError("Couldn't load the diagnostic questions for this topic — try refreshing.");
+      } finally {
+        if (!cancelled) setDiagLoading(false);
+      }
+    }
+
+    loadQuestions();
+    return () => {
+      cancelled = true;
+    };
+  }, [topic?.id]);
 
   if (loading) {
     return <div className={`shell ${styles.page}`} />;
@@ -125,34 +168,81 @@ export default function TopicPage() {
   }
 
   function handleDiagnoseSelect(option: string) {
-    const nextAnswers = [...diagAnswers, option];
+    if (!diagQuestions) return;
+    const question = diagQuestions[diagIdx];
+    const nextAnswers = [...diagAnswers, { question_id: question.question_id, student_answer: option }];
     setDiagAnswers(nextAnswers);
-    if (diagIdx + 1 < DIAGNOSE_QUESTIONS.length) {
+    if (diagIdx + 1 < diagQuestions.length) {
       setDiagIdx(diagIdx + 1);
       return;
     }
-    setStage("diagnose-summary");
+    handleDiagnoseSubmit(nextAnswers);
   }
 
-  function handleDiagnoseSummaryContinue() {
+  async function handleDiagnoseSubmit(answers: { question_id: string; student_answer: string }[]) {
+    const session = getSession();
+    if (!session) {
+      setDiagScore("0/0");
+      setStage("diagnose-summary");
+      return;
+    }
+    try {
+      const response = await fetch("/api/diagnostic/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ answers }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Something went wrong");
+      setDiagScore(data.score ?? "0/0");
+    } catch {
+      setDiagScore("0/0");
+    } finally {
+      setStage("diagnose-summary");
+    }
+  }
+
+  async function handleDiagnoseSummaryContinue() {
     if (!topic || !subject) return;
     setTopicProgress(subject.id, topic.id, 30);
     setStage("thinking-explain");
-    setTimeout(() => {
+
+    const session = getSession();
+    if (!session) {
+      pushMessage({ role: "tutor", paragraphs: ["You'll need to be signed in to get an explanation — try refreshing."] });
+      setStage("explain-shown");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          courseId: subject.id,
+          topicId: topic.id,
+          question: `Explain ${topic.name} from the ground up, starting from the fundamentals.`,
+          sessionId: sessionId ?? undefined,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Something went wrong");
+
+      if (data.sessionId) setSessionId(data.sessionId);
       pushMessage({
         role: "tutor",
         tag: "Grounded Explanation",
-        paragraphs: [
-          `Good starting point. Here's the core idea behind ${topic.name}, tied to where your answers landed ${"[1]"}.`,
-          `The key mechanism is how each step depends only on the result of the step before it — which is exactly the part most explanations skip over ${"[2]"}. Once that clicks, the rest is mostly bookkeeping.`,
-        ],
-        citations: [
-          { mark: "[1]", source: "Lecture 4 · Slide 12", excerpt: `"A ${topic.name.toLowerCase()} node's identity is independent of its position in the drawing — only the connections matter for structure."` },
-          { mark: "[2]", source: `${subject.name} Course Notes, §2`, excerpt: "\"Each step reads only the state produced by the step before it — there's no lookahead in the base case.\"" },
-        ],
+        paragraphs: [data.answer],
+        citations: data.citations,
       });
+    } catch {
+      pushMessage({
+        role: "tutor",
+        paragraphs: ["Something went wrong getting an explanation for this topic — try again in a moment."],
+      });
+    } finally {
       setStage("explain-shown");
-    }, THINKING_MS);
+    }
   }
 
   function handleContinueToCheck() {
@@ -168,20 +258,32 @@ export default function TopicPage() {
     setStage("check-ask");
   }
 
-  function handleCheckSubmit() {
+  async function handleCheckSubmit() {
     if (!input.trim() || !topic || !subject) return;
     const answer = input.trim();
     pushMessage({ role: "user", paragraphs: [answer] });
     setInput("");
     setStage("checking");
 
-    setTimeout(() => {
-      if (answer.length >= 15) {
-        pushMessage({
-          role: "tutor",
-          tag: "Result",
-          paragraphs: [`That's a solid, specific explanation of ${topic.name} — you've got it.`],
-        });
+    const session = getSession();
+    if (!session) {
+      pushMessage({ role: "tutor", paragraphs: ["You'll need to be signed in to check this — try refreshing."] });
+      setStage("check-ask");
+      return;
+    }
+
+    try {
+      const checkRes = await fetch("/api/student/mastery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ topicId: topic.id, sessionId: sessionId ?? undefined, explanation: answer }),
+      });
+      const checkData = await checkRes.json();
+      if (!checkRes.ok) throw new Error(checkData.error || "Something went wrong");
+      if (checkData.sessionId) setSessionId(checkData.sessionId);
+
+      if (checkData.passed) {
+        pushMessage({ role: "tutor", tag: "Result", paragraphs: [checkData.feedback] });
         markTopicMastered(subject.id, topic.id);
         announceMastery(subject.id, topic.id);
         setStage("done");
@@ -190,23 +292,38 @@ export default function TopicPage() {
 
       setHasRetried(true);
       setTopicProgress(subject.id, topic.id, 70);
+      pushMessage({ role: "tutor", tag: "Feedback", paragraphs: [checkData.feedback] });
       setStage("thinking-retry-explain");
-      setTimeout(() => {
-        pushMessage({
-          role: "tutor",
-          tag: "Alternate Explanation",
-          paragraphs: [
-            `Let's come at this from a different angle — here's a worked example instead of the abstract version ${"[1]"}.`,
-            `Walk through it step by step: start from what you already know is true, apply the rule for ${topic.name} once, and check that the result still makes sense before moving on ${"[2]"}. That's the whole pattern, just repeated.`,
-          ],
-          citations: [
-            { mark: "[1]", source: `${topic.name} — Worked Examples`, excerpt: "\"Example 3 walks the same pattern with concrete values substituted at each step.\"" },
-            { mark: "[2]", source: `${subject.name} Course Notes, §3`, excerpt: "\"Checking the result against the invariant is what separates a correct step from a lucky one.\"" },
-          ],
-        });
-        setStage("retry-shown");
-      }, THINKING_MS);
-    }, THINKING_MS);
+
+      const retryRes = await fetch("/api/retry/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ topicId: topic.id, sessionId: checkData.sessionId ?? sessionId ?? undefined }),
+      });
+      const retryData = await retryRes.json();
+      if (!retryRes.ok) throw new Error(retryData.error || "Something went wrong");
+      if (retryData.sessionId) setSessionId(retryData.sessionId);
+
+      // /retry/generate returns real citations, but (unlike /query) doesn't cite
+      // inline in the content text — nothing for renderCite's [\d] regex to turn
+      // into a clickable chip. Append the marks so the citation data is actually
+      // reachable instead of silently unused.
+      const citations: Citation[] = retryData.citations ?? [];
+      const withSources = citations.length
+        ? `${retryData.content}\n\nSources: ${citations.map((c: Citation) => c.mark).join(" ")}`
+        : retryData.content;
+
+      pushMessage({
+        role: "tutor",
+        tag: "Alternate Explanation",
+        paragraphs: [withSources],
+        citations,
+      });
+      setStage("retry-shown");
+    } catch {
+      pushMessage({ role: "tutor", paragraphs: ["Something went wrong checking that — try again in a moment."] });
+      setStage("check-ask");
+    }
   }
 
   function handleContinueToRetryCheck() {
@@ -222,8 +339,9 @@ export default function TopicPage() {
     setStage("retry-check-ask");
   }
 
-  function handleRetryCheckSubmit() {
+  async function handleRetryCheckSubmit() {
     if (!topic || !subject || stepAnswers.some((a) => !a.trim())) return;
+    const solution = stepAnswers.map((a, i) => `Step ${i + 1}: ${a.trim()}`).join(" ");
     pushMessage({
       role: "user",
       paragraphs: stepAnswers.map((a, i) => `Step ${i + 1}: ${a.trim()}`),
@@ -231,16 +349,33 @@ export default function TopicPage() {
     setStepAnswers(["", "", ""]);
     setStage("retry-checking");
 
-    setTimeout(() => {
-      pushMessage({
-        role: "tutor",
-        tag: "Result",
-        paragraphs: [`Walked through cleanly — that's a mastered understanding of ${topic.name}.`],
+    const session = getSession();
+    if (!session) {
+      pushMessage({ role: "tutor", paragraphs: ["You'll need to be signed in to check this — try refreshing."] });
+      setStage("retry-check-ask");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/student/mastery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ topicId: topic.id, sessionId: sessionId ?? undefined, solution }),
       });
-      markTopicMastered(subject.id, topic.id);
-      announceMastery(subject.id, topic.id);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Something went wrong");
+      if (data.sessionId) setSessionId(data.sessionId);
+
+      pushMessage({ role: "tutor", tag: "Result", paragraphs: [data.feedback] });
+      if (data.passed) {
+        markTopicMastered(subject.id, topic.id);
+        announceMastery(subject.id, topic.id);
+      }
       setStage("done");
-    }, THINKING_MS);
+    } catch {
+      pushMessage({ role: "tutor", paragraphs: ["Something went wrong checking that — try again in a moment."] });
+      setStage("retry-check-ask");
+    }
   }
 
   const steps = hasRetried ? [...BASE_STEPS, "Retry"] : BASE_STEPS;
@@ -281,7 +416,12 @@ export default function TopicPage() {
     });
   }
 
-  const diagSummary = summarizeDiagnostic(diagAnswers);
+  const diagSummary = summarizeDiagnosticScore(diagScore ?? "0/0");
+
+  function handleSkipDiagnose() {
+    setDiagScore(null);
+    setStage("diagnose-summary");
+  }
 
   return (
     <div className={`shell ${styles.page}`}>
@@ -311,33 +451,64 @@ export default function TopicPage() {
 
       {stage === "diagnose" && (
         <div className={styles.diagnoseCard}>
-          <div className={styles.diagnoseDots}>
-            {DIAGNOSE_QUESTIONS.map((_, i) => (
-              <span key={i} className={`${styles.diagnoseDot} ${i <= diagIdx ? styles.diagnoseDotActive : ""}`} />
-            ))}
-          </div>
-          <p className={styles.diagnoseTag}>
-            Diagnostic {diagIdx + 1} / {DIAGNOSE_QUESTIONS.length}
-          </p>
-          <h2 className={styles.diagnosePrompt}>{DIAGNOSE_QUESTIONS[diagIdx].prompt(topic.name)}</h2>
-          <div className={styles.diagnoseOptions}>
-            {DIAGNOSE_QUESTIONS[diagIdx].options.map((opt) => (
-              <button
-                key={opt}
-                type="button"
-                className={styles.diagnoseOption}
-                onClick={() => handleDiagnoseSelect(opt)}
-              >
-                {opt}
-              </button>
-            ))}
-          </div>
+          {diagLoading && <p className={styles.diagnoseTag}>Preparing your diagnostic…</p>}
+
+          {!diagLoading && diagError && (
+            <>
+              <p className={styles.diagnoseTag}>Couldn't load the diagnostic</p>
+              <h2 className={styles.diagnosePrompt}>{diagError}</h2>
+              <div className={styles.continueRow}>
+                <button type="button" className={styles.continueButton} onClick={handleSkipDiagnose}>
+                  Skip to the explanation
+                  <ArrowIcon size={14} />
+                </button>
+              </div>
+            </>
+          )}
+
+          {!diagLoading && !diagError && diagQuestions && diagQuestions.length === 0 && (
+            <>
+              <h2 className={styles.diagnosePrompt}>No diagnostic questions available for this topic yet.</h2>
+              <div className={styles.continueRow}>
+                <button type="button" className={styles.continueButton} onClick={handleSkipDiagnose}>
+                  Continue
+                  <ArrowIcon size={14} />
+                </button>
+              </div>
+            </>
+          )}
+
+          {!diagLoading && !diagError && diagQuestions && diagQuestions.length > 0 && (
+            <>
+              <div className={styles.diagnoseDots}>
+                {diagQuestions.map((_, i) => (
+                  <span key={i} className={`${styles.diagnoseDot} ${i <= diagIdx ? styles.diagnoseDotActive : ""}`} />
+                ))}
+              </div>
+              <p className={styles.diagnoseTag}>
+                Diagnostic {diagIdx + 1} / {diagQuestions.length}
+              </p>
+              <h2 className={styles.diagnosePrompt}>{diagQuestions[diagIdx].text}</h2>
+              <div className={styles.diagnoseOptions}>
+                {diagQuestions[diagIdx].options.map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    className={styles.diagnoseOption}
+                    onClick={() => handleDiagnoseSelect(opt)}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 
       {stage === "diagnose-summary" && (
         <div className={styles.diagnoseCard}>
-          <p className={styles.diagnoseTag}>Starting Point</p>
+          <p className={styles.diagnoseTag}>Starting Point{diagScore ? ` · ${diagScore} correct` : ""}</p>
           <h2 className={styles.diagnosePrompt}>{diagSummary.headline}</h2>
           <p className={styles.summaryHint}>{diagSummary.sub}</p>
           <div className={styles.continueRow}>

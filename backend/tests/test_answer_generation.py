@@ -42,7 +42,7 @@ class AnswerGenerationTests(unittest.TestCase):
         ], client)
 
         self.assertEqual(answer, "Grounded answer [chunk-1].")
-        self.assertEqual(client.request["model"], "gemini-2.5-flash")
+        self.assertEqual(client.request["model"], "gemini-3.6-flash")
         self.assertIn("What is traversal?", client.request["contents"])
         self.assertIn("[chunk-1] Traversal visits graph nodes.", client.request["contents"])
 
@@ -53,7 +53,7 @@ class AnswerGenerationTests(unittest.TestCase):
             {
                 "chunk_id": "chunk-1",
                 "chunk_text": "Unrelated content.",
-                "similarity": 0.69,
+                "similarity": 0.1,  # unambiguously below any reasonable threshold, not tied to the current .env value
             }
         ], client)
 
