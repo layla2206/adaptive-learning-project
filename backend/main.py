@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import time
 import math
@@ -13,6 +14,9 @@ from supabase import create_client, Client
 import PyPDF2
 from google import genai
 from google.genai import types
+from answer_generation import generate_answer, AnswerGenerationError, NO_CONTEXT_ANSWER
+from citations import map_chunk, map_citations
+from retrieval import retrieve_context
 
 # Load .env from the parent directory — this repo keeps real config in
 # .env (not .env.local, which doesn't exist here), so point dotenv at that.
@@ -56,6 +60,11 @@ gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_
 if not gemini_api_key:
     raise ValueError("Missing Gemini API Key in environment.")
 gemini_client = genai.Client(api_key=gemini_api_key)
+
+
+def generate_grounded_answer(question: str, chunks: List[dict]) -> str:
+    """Generate an answer using the production Gemini client and retrieved context."""
+    return generate_answer(question, chunks, gemini_client)
 
 
 def parse_document(file_bytes: bytes, file_type: str) -> str:
@@ -181,7 +190,6 @@ async def upload_document(
         unique_id = f"doc-{str(uuid.uuid4())[:6]}"
         
         # Sanitize filename for R2 key
-        import re
         sanitized_name = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
         r2_key = f"courses/{courseId}/{timestamp}-{sanitized_name}"
         
@@ -355,7 +363,7 @@ async def generate_diagnostic(req: DiagnosticGenerateReq):
         """
         
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
@@ -470,6 +478,27 @@ def level_for_mastery(score: float) -> str:
     if score > 0:
         return "Intermediate"
     return "Beginner"
+
+
+def renumber_inline_citations(text: str, chunks: List[dict]):
+    """Gemini cites chunks inline by their real chunk_id (e.g. "[4d5b6eda-0153-4]"),
+    but the frontend only recognizes single-digit markers like [1]/[2] and matches
+    them against citation.mark exactly (see renderCite in the topic page) -- so the
+    text and the citation list have to be renumbered together, not independently.
+    Shared by /query and /retry/generate's prose formats."""
+    known_ids = {chunk.get("chunk_id") for chunk in chunks}
+    cited_ids_in_order = []
+    for match in re.findall(r"\[([^\[\]]+)\]", text):
+        if match in known_ids and match not in cited_ids_in_order:
+            cited_ids_in_order.append(match)
+
+    citations = map_citations(chunks, cited_ids_in_order)
+
+    rewritten = text
+    for citation, original_id in zip(citations, cited_ids_in_order):
+        rewritten = rewritten.replace(f"[{original_id}]", citation["mark"])
+
+    return rewritten, citations
 
 
 def parse_gemini_json(response) -> dict:
@@ -607,7 +636,7 @@ Student submissions:
 {chr(10).join(f"{label}: {text}" for _, label, text in submissions)}"""
 
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
             config={"response_mime_type": "application/json"},
         )
@@ -689,6 +718,26 @@ class RetryGenerateRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+RETRY_FORMATS = ["Worked Example", "Hands-on Task", "Analogy", "Diagram", "Mind Map"]
+RETRY_DIAGRAM_FORMATS = {"Diagram", "Mind Map"}
+
+RETRY_FORMAT_INSTRUCTIONS = {
+    "Worked Example": "Produce a fully worked, step-by-step example solved using the topic's method.",
+    "Hands-on Task": "Produce a short guided exercise for the student to attempt, explaining the underlying idea first.",
+    "Analogy": "Explain the concept through a clear, relatable real-world analogy, then explicitly connect each part of the analogy back to the actual mechanism.",
+    "Diagram": (
+        "Produce ONLY a Mermaid flowchart (the whole \"content\" string must be valid Mermaid syntax, "
+        "starting with \"graph TD\" or \"graph LR\", nothing else — no prose, no markdown code fences) "
+        "showing the key steps, states, or relationships in the topic."
+    ),
+    "Mind Map": (
+        "Produce ONLY a Mermaid mind map (the whole \"content\" string must be valid Mermaid syntax, "
+        "starting with \"mindmap\", nothing else — no prose, no markdown code fences) breaking the topic "
+        "down into its key concepts and sub-concepts."
+    ),
+}
+
+
 @app.post("/retry/generate")
 async def generate_retry(req: RetryGenerateRequest):
     try:
@@ -701,35 +750,77 @@ async def generate_retry(req: RetryGenerateRequest):
             .execute()
         )
         attempt_number = (retries.count or 0) + 1
-        format_used = "Worked Example" if attempt_number % 2 == 1 else "Hands-on Task"
-        chunks_res = supabase.table("chunks").select("chunk_id, chunk_text").eq("topic_id", req.topic_id).limit(8).execute()
+        format_used = RETRY_FORMATS[(attempt_number - 1) % len(RETRY_FORMATS)]
+        is_diagram_format = format_used in RETRY_DIAGRAM_FORMATS
+        chunks_res = (
+            supabase.table("chunks")
+            .select("chunk_id, document_id, chunk_text, page_number, documents(file_name)")
+            .eq("topic_id", req.topic_id)
+            .limit(8)
+            .execute()
+        )
         if not chunks_res.data:
             raise HTTPException(status_code=422, detail="No learning content found for this topic")
 
-        format_instruction = (
-            "Produce a fully worked, step-by-step example solved using the topic's method."
-            if format_used == "Worked Example"
-            else "Produce a short guided exercise for the student to attempt, explaining the underlying idea first."
+        chunks = []
+        for chunk in chunks_res.data:
+            document = chunk.get("documents") or {}
+            chunks.append(map_chunk({
+                **chunk,
+                "document_title": document.get("file_name"),
+            }))
+
+        format_instruction = RETRY_FORMAT_INSTRUCTIONS[format_used]
+        citation_instruction = (
+            "Do not reference chunk IDs inside the Mermaid syntax itself -- list any sources used in citedChunkIds only."
+            if is_diagram_format
+            else (
+                "Cite supporting claims inline in the content using the chunk's ID in brackets "
+                "immediately after the claim it supports, for example [chunk-id]. Only cite chunk "
+                "IDs included below."
+            )
         )
         prompt = f"""Create a retry intervention for the topic using only the learning content below.
 Format: {format_used}. {format_instruction}
 Return ONLY strict JSON: {{"content": "...", "citedChunkIds": ["chunk_id", ...]}}
-Only cite chunk IDs included below.
+{citation_instruction}
 
 Learning content:
-{chr(10).join(f"[{chunk['chunk_id']}] {chunk['chunk_text']}" for chunk in chunks_res.data)}"""
+{chr(10).join(f"[{chunk['chunk_id']}] {chunk['chunk_text']}" for chunk in chunks)}"""
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
             config={"response_mime_type": "application/json"},
         )
         generated = parse_gemini_json(response)
         content = generated.get("content")
         cited_ids = generated.get("citedChunkIds", [])
-        valid_ids = {chunk["chunk_id"] for chunk in chunks_res.data}
+        valid_ids = {chunk["chunk_id"] for chunk in chunks}
         if not isinstance(content, str) or not content.strip() or not isinstance(cited_ids, list):
             raise HTTPException(status_code=502, detail="AI returned invalid retry content")
-        cited_ids = [chunk_id for chunk_id in cited_ids if isinstance(chunk_id, str) and chunk_id in valid_ids]
+
+        if is_diagram_format:
+            # Models routinely ignore "no code fences" instructions and wrap
+            # output in ```mermaid ... ``` anyway -- strip that defensively
+            # rather than hand the fence markers to the Mermaid renderer.
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[1] if "\n" in content else ""
+            if content.endswith("```"):
+                content = content.rsplit("```", 1)[0]
+            content = content.strip()
+            if not content:
+                raise HTTPException(status_code=502, detail="AI returned an empty diagram")
+
+        if is_diagram_format:
+            cited_ids = [chunk_id for chunk_id in cited_ids if isinstance(chunk_id, str) and chunk_id in valid_ids]
+            citations = map_citations(chunks, cited_ids)
+        else:
+            # Prose formats cite inline (see citation_instruction above); the same
+            # renumbering /query uses keeps the text and the citations list in sync,
+            # rather than relying on the model's separate citedChunkIds field.
+            content, citations = renumber_inline_citations(content, chunks)
+            cited_ids = [c["chunk_id"] for c in citations]
         supabase.table("retry_attempts").insert({
             "retry_id": short_id("rty"),
             "student_id": req.student_id,
@@ -739,9 +830,53 @@ Learning content:
             "result": None,
         }).execute()
         append_session_message(session_id, "ai", content)
-        return {"sessionId": session_id, "format": format_used, "content": content, "citedChunkIds": cited_ids}
+        return {
+            "sessionId": session_id,
+            "format": format_used,
+            "isDiagram": is_diagram_format,
+            "content": content,
+            "citedChunkIds": cited_ids,
+            "chunks": chunks,
+            "citations": citations,
+        }
     except HTTPException:
         raise
     except Exception as exc:
         print("Retry Generation Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to generate retry content") from exc
+
+
+class QueryRequest(BaseModel):
+    student_id: str
+    course_id: str
+    topic_id: str
+    question: str
+    session_id: Optional[str] = None
+
+
+@app.post("/query")
+async def query_content(req: QueryRequest):
+    try:
+        session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
+        chunks = await retrieve_context(req.question, topic_id=req.topic_id, course_id=req.course_id)
+
+        try:
+            raw_answer = generate_answer(req.question, chunks, gemini_client)
+        except AnswerGenerationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        if raw_answer == NO_CONTEXT_ANSWER or not chunks:
+            append_session_message(session_id, "student", req.question)
+            append_session_message(session_id, "ai", raw_answer)
+            return {"sessionId": session_id, "answer": raw_answer, "citations": []}
+
+        answer, citations = renumber_inline_citations(raw_answer, chunks)
+
+        append_session_message(session_id, "student", req.question)
+        append_session_message(session_id, "ai", answer)
+        return {"sessionId": session_id, "answer": answer, "citations": citations}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("Query Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to answer the question") from exc

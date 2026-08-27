@@ -1,0 +1,71 @@
+import sys
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from answer_generation import AnswerGenerationError, NO_CONTEXT_ANSWER, generate_answer
+
+
+class FakeGeminiClient:
+    def __init__(self, response_text="Grounded answer [chunk-1].", error=None):
+        self.response_text = response_text
+        self.error = error
+        self.models = self
+
+    def generate_content(self, **kwargs):
+        if self.error:
+            raise self.error
+        self.request = kwargs
+        return SimpleNamespace(text=self.response_text)
+
+
+class AnswerGenerationTests(unittest.TestCase):
+    def test_empty_chunks_return_no_context_answer_without_calling_model(self):
+        client = FakeGeminiClient()
+
+        answer = generate_answer("What is traversal?", [], client)
+
+        self.assertEqual(answer, NO_CONTEXT_ANSWER)
+        self.assertFalse(hasattr(client, "request"))
+
+    def test_generates_plain_text_answer_from_chunks(self):
+        client = FakeGeminiClient()
+
+        answer = generate_answer("What is traversal?", [
+            {
+                "chunk_id": "chunk-1",
+                "chunk_text": "Traversal visits graph nodes.",
+                "similarity": 0.9,
+            }
+        ], client)
+
+        self.assertEqual(answer, "Grounded answer [chunk-1].")
+        self.assertEqual(client.request["model"], "gemini-3.6-flash")
+        self.assertIn("What is traversal?", client.request["contents"])
+        self.assertIn("[chunk-1] Traversal visits graph nodes.", client.request["contents"])
+
+    def test_below_threshold_returns_fallback_without_calling_model(self):
+        client = FakeGeminiClient()
+
+        answer = generate_answer("What is traversal?", [
+            {
+                "chunk_id": "chunk-1",
+                "chunk_text": "Unrelated content.",
+                "similarity": 0.1,  # unambiguously below any reasonable threshold, not tied to the current .env value
+            }
+        ], client)
+
+        self.assertEqual(answer, NO_CONTEXT_ANSWER)
+        self.assertFalse(hasattr(client, "request"))
+
+    def test_model_failure_is_wrapped(self):
+        client = FakeGeminiClient(error=TimeoutError("timed out"))
+
+        with self.assertRaises(AnswerGenerationError):
+            generate_answer("What is traversal?", [{"chunk_text": "Some context.", "similarity": 0.9}], client)
+
+
+if __name__ == "__main__":
+    unittest.main()
