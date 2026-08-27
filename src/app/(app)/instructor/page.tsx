@@ -66,7 +66,10 @@ export default function InstructorDashboardPage() {
         <h2>Quick Actions</h2>
       </div>
       <div className={styles.actionsGrid}>
-        <Card className={styles.actionCard}>
+        <Card
+          href={courses.length === 1 ? `/instructor/courses/${courses[0].id}` : "#courses"}
+          className={styles.actionCard}
+        >
           <span className={styles.actionIcon}>
             <UploadIcon size={20} />
           </span>

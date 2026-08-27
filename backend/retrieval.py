@@ -1,14 +1,16 @@
 import os
+import math
 import logging
 from typing import List, Optional, Dict, Any
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 from supabase import create_client, Client
 
 # Needed in case this file is run standalone (not via main.py, which already
-# calls load_dotenv)
-load_dotenv(dotenv_path="../.env.local")
+# calls load_dotenv). This repo keeps real config in .env, not .env.local.
+load_dotenv(dotenv_path="../.env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("retrieve")
@@ -24,6 +26,19 @@ if not gemini_api_key:
 
 supabase: Client = create_client(supabase_url, supabase_key)
 gemini_client = genai.Client(api_key=gemini_api_key)
+
+# Must match backend/main.py's generate_embeddings/embed_query — same model,
+# same output width as the chunks.embedding vector(768) column, and the same
+# manual L2 normalization gemini-embedding-001 requires for non-3072 output.
+EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_DIMENSIONS = 768
+
+
+def _normalize(vector: List[float]) -> List[float]:
+    norm = math.sqrt(sum(x * x for x in vector))
+    if norm == 0:
+        return vector
+    return [x / norm for x in vector]
 
 
 async def retrieve_context(
@@ -44,27 +59,35 @@ async def retrieve_context(
         return []
 
     try:
-        # 1. Convert the student's answer into a vector
-        # SEMANTIC_SIMILARITY is used because we're comparing an answer
-        # against reference content, not doing a plain text search
+        # 1. Convert the student's query into a vector. RETRIEVAL_QUERY (not
+        # SEMANTIC_SIMILARITY) is required here — gemini-embedding-001 is an
+        # asymmetric model, and chunks were embedded with RETRIEVAL_DOCUMENT
+        # (see generate_embeddings in main.py). Mismatched task_types degrade
+        # retrieval quality even though both would technically run.
         embed_response = gemini_client.models.embed_content(
-            model="text-embedding-004",
+            model=EMBEDDING_MODEL,
             contents=query,
-            config={"task_type": "SEMANTIC_SIMILARITY"},
+            config=types.EmbedContentConfig(
+                output_dimensionality=EMBEDDING_DIMENSIONS,
+                task_type="RETRIEVAL_QUERY",
+            ),
         )
-        query_vector = embed_response.embeddings[0].values
+        query_vector = _normalize(embed_response.embeddings[0].values)
 
     except Exception as e:
         logger.error(f"Embedding failed for query (len={len(query)}): {e}")
         return []
 
     try:
-        # 2. Search Supabase for the closest chunks to the vector
+        # 2. Search Supabase for the closest chunks to the vector, via the
+        # match_chunks() RPC defined in backend/supabase/rag_retrieval.sql.
+        # chunks has no course_id column of its own (only topic_id) — the SQL
+        # function joins through documents to scope by course.
         rpc_params = {
             "query_embedding": query_vector,
             "match_count": top_k,
-            "filter_topic_id": topic_id,
-            "filter_course_id": course_id,
+            "match_topic_id": topic_id,
+            "match_course_id": course_id,
         }
         res = supabase.rpc("match_chunks", rpc_params).execute()
         return res.data or []
@@ -72,40 +95,3 @@ async def retrieve_context(
     except Exception as e:
         logger.error(f"Supabase retrieval RPC failed (topic={topic_id}, course={course_id}): {e}")
         return []
-    
-    
-    
-    
-    
-"""-- CREATE OR REPLACE FUNCTION match_chunks (
---   query_embedding vector(768),
---   match_count int DEFAULT 5,
---   filter_topic_id text DEFAULT NULL,
---   filter_course_id text DEFAULT NULL
--- )
--- RETURNS TABLE (
---   chunk_id text,
---   document_id text,
---   topic_id text,
---   course_id text,
---   chunk_text text,
---   similarity float
--- )
--- LANGUAGE plpgsql
--- AS $$
--- BEGIN
---   RETURN QUERY
---   SELECT
---     chunks.chunk_id,
---     chunks.document_id,
---     chunks.topic_id,
---     chunks.course_id,
---     chunks.chunk_text,
---     1 - (chunks.embedding <=> query_embedding) AS similarity
---   FROM chunks
---   WHERE (filter_topic_id IS NULL OR chunks.topic_id = filter_topic_id)
---     AND (filter_course_id IS NULL OR chunks.course_id = filter_course_id)
---   ORDER BY chunks.embedding <=> query_embedding
---   LIMIT match_count;
--- END;
--- $$;"""

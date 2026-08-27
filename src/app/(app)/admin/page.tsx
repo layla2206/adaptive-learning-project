@@ -45,7 +45,7 @@ export default function AdminPage() {
         <InstructorTable instructors={dashboard?.instructorAccounts ?? []} />
       </div>
       <div id="courses">
-        <CourseTable courses={dashboard?.platformCourses ?? []} />
+        <CourseTable courses={dashboard?.platformCourses ?? []} instructors={dashboard?.instructorAccounts ?? []} />
       </div>
     </div>
   );
