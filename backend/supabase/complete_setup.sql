@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS instructors (
     instructor_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -18,6 +19,9 @@ CREATE TABLE IF NOT EXISTS courses (
     course_id VARCHAR(10) PRIMARY KEY,
     course_name VARCHAR(100) NOT NULL,
     instructor_id UUID NOT NULL,
+    summary TEXT,
+    building VARCHAR(20) NOT NULL DEFAULT 'citadel',
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
     FOREIGN KEY (instructor_id) REFERENCES instructors(instructor_id)
 );
 
@@ -27,6 +31,7 @@ CREATE TABLE IF NOT EXISTS topics (
     course_id VARCHAR(10) NOT NULL,
     topic_name VARCHAR(100) NOT NULL,
     subtopic_name VARCHAR(100),
+    sort_order INT NOT NULL DEFAULT 0,
     FOREIGN KEY (course_id) REFERENCES courses(course_id)
 );
 
@@ -38,6 +43,7 @@ CREATE TABLE IF NOT EXISTS documents (
     topic_id VARCHAR(10),
     file_name VARCHAR(255) NOT NULL,
     file_type VARCHAR(20),
+    lecture_number INT,
     upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (instructor_id) REFERENCES instructors(instructor_id),
     FOREIGN KEY (course_id) REFERENCES courses(course_id),
@@ -185,49 +191,53 @@ CREATE TABLE IF NOT EXISTS retry_attempts (
     FOREIGN KEY (topic_id) REFERENCES topics(topic_id)
 );
 
+-- 17. xp_log (append-only XP ledger — total XP, streak, and the weekly
+-- calendar are all derived from this at query time)
+CREATE TABLE IF NOT EXISTS xp_log (
+    xp_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id UUID NOT NULL,
+    topic_id VARCHAR(10),
+    amount INT NOT NULL,
+    reason VARCHAR(50) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    FOREIGN KEY (student_id) REFERENCES students(student_id),
+    FOREIGN KEY (topic_id) REFERENCES topics(topic_id)
+);
+
 -- ========================================================================
 -- SEED DATA
 -- ========================================================================
 
--- Demo Instructor (Using specific UUID so foreign keys work reliably)
-INSERT INTO instructors (instructor_id, name, email) 
-VALUES ('550e8400-e29b-41d4-a716-446655440000', 'Dr. Elena Marsh', 'elena.marsh@example.edu')
+-- Demo Instructor (Using specific UUID so foreign keys work reliably) —
+-- Layla, whose real uploaded/embedded content this course actually has.
+INSERT INTO instructors (instructor_id, name, email)
+VALUES ('d2d34482-2043-4312-9918-2fb7b1cc263d', 'Layla', 'laila.khaled.04@gmail.com')
 ON CONFLICT (instructor_id) DO NOTHING;
 
--- Demo Courses
+-- Demo Course — single-subject prototype scope: cs301 is the only course
+-- the AI model integration runs against (cs201 was the earlier placeholder
+-- and has been retired).
 INSERT INTO courses (course_id, course_name, instructor_id) VALUES
-('cs201', 'Data Structures & Algorithms', '550e8400-e29b-41d4-a716-446655440000'),
-('math210', 'Calculus II', '550e8400-e29b-41d4-a716-446655440000'),
-('math240', 'Linear Algebra', '550e8400-e29b-41d4-a716-446655440000'),
-('chem150', 'Organic Chemistry I', '550e8400-e29b-41d4-a716-446655440000')
+('cs301', 'Data Structures & Algorithms', 'd2d34482-2043-4312-9918-2fb7b1cc263d')
 ON CONFLICT (course_id) DO NOTHING;
 
--- Demo Topics
-INSERT INTO topics (topic_id, course_id, topic_name, subtopic_name) VALUES
-('top-cs-1', 'cs201', 'Graph Traversal (BFS/DFS)', 'Breadth & Depth First Search'),
-('top-cs-2', 'cs201', 'Dynamic Programming', 'Memoization and Tabulation'),
-('top-cs-3', 'cs201', 'Hashing & Collision Handling', 'Hash Tables & Chaining'),
-('top-cs-4', 'cs201', 'Tree Balancing', 'AVL & Red-Black Trees'),
-('top-m2-1', 'math210', 'Series Convergence Tests', 'Ratio & Root Tests'),
-('top-m2-2', 'math210', 'Integration by Parts', 'Techniques of Integration'),
-('top-m2-3', 'math210', 'Related Rates', 'Derivatives in Real Applications'),
-('top-la-1', 'math240', 'Eigenvalues & Eigenvectors', 'Diagonalization & Transformations'),
-('top-la-2', 'math240', 'Vector Spaces', 'Span, Basis, and Dimension'),
-('top-ch-1', 'chem150', 'Reaction Mechanisms', 'Electrophilic Addition'),
-('top-ch-2', 'chem150', 'Stereochemistry', 'Chirality & Enantiomers')
+-- Demo Topics — only the one topic real content has actually been tagged
+-- against so far.
+INSERT INTO topics (topic_id, course_id, topic_name, subtopic_name, sort_order) VALUES
+('top-hash1', 'cs301', 'Hash Tables', 'Hashing & Collision Handling', 1)
 ON CONFLICT (topic_id) DO NOTHING;
 
 -- ========================================================================
 -- RLS POLICIES (Development Access)
 -- ========================================================================
-DO $$ 
-DECLARE 
+DO $$
+DECLARE
     t text;
     tables text[] := ARRAY[
-        'instructors', 'courses', 'topics', 'documents', 'chunks', 
-        'students', 'enrollments', 'student_profiles', 'diagnostic_questions', 
-        'diagnostic_results', 'sessions', 'session_messages', 'student_answers', 
-        'answer_citations', 'mastery_checks', 'retry_attempts'
+        'instructors', 'courses', 'topics', 'documents', 'chunks',
+        'students', 'enrollments', 'student_profiles', 'diagnostic_questions',
+        'diagnostic_results', 'sessions', 'session_messages', 'student_answers',
+        'answer_citations', 'mastery_checks', 'retry_attempts', 'xp_log'
     ];
 BEGIN
     FOREACH t IN ARRAY tables LOOP

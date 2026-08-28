@@ -81,9 +81,11 @@ END $$;
 
 -- ========================================================================
 -- SEED — a few roster rows so the sign-up flow is testable end to end.
+-- course_id matches cs301, the single course seeded in seed_and_policies.sql
+-- (previously cs201, retired in favor of the course with real uploaded/
+-- embedded RAG content).
 -- ========================================================================
 INSERT INTO roster (student_id, name, email, course_id) VALUES
-('S10293', 'Amara Osei', 'amara.osei@example.edu', 'cs201'),
-('S10293', 'Amara Osei', 'amara.osei@example.edu', 'math210'),
-('S20481', 'Diego Fuentes', 'diego.fuentes@example.edu', 'cs201')
+('S10293', 'Amara Osei', 'amara.osei@example.edu', 'cs301'),
+('S20481', 'Diego Fuentes', 'diego.fuentes@example.edu', 'cs301')
 ON CONFLICT (student_id, course_id) DO NOTHING;

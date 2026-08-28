@@ -1,20 +1,21 @@
 -- 1. Seed demo Instructor
-INSERT INTO instructors (instructor_id, name, email) 
-VALUES ('inst-1', 'Dr. Elena Marsh', 'elena.marsh@example.edu')
+INSERT INTO instructors (instructor_id, name, email)
+VALUES ('d2d34482-2043-4312-9918-2fb7b1cc263d', 'Layla', 'laila.khaled.04@gmail.com')
 ON CONFLICT (instructor_id) DO NOTHING;
 
--- 2. Seed demo Course — single-subject prototype scope: cs201 is the only
--- course the AI model integration runs against for now.
+-- 2. Seed demo Course — single-subject prototype scope: cs301 is the only
+-- course the AI model integration runs against for now (the one with real
+-- uploaded/embedded RAG content — cs201 was the earlier placeholder and has
+-- been retired).
 INSERT INTO courses (course_id, course_name, instructor_id) VALUES
-('cs201', 'Data Structures & Algorithms', 'inst-1')
+('cs301', 'Data Structures & Algorithms', 'd2d34482-2043-4312-9918-2fb7b1cc263d')
 ON CONFLICT (course_id) DO NOTHING;
 
--- 3. Seed demo Topics
+-- 3. Seed demo Topics — only the one topic real content has actually been
+-- tagged against so far. Add more here as more of the uploaded lecture set
+-- gets tagged to topics.
 INSERT INTO topics (topic_id, course_id, topic_name, subtopic_name, sort_order) VALUES
-('top-cs-1', 'cs201', 'Graph Traversal (BFS/DFS)', 'Breadth & Depth First Search', 1),
-('top-cs-2', 'cs201', 'Dynamic Programming', 'Memoization and Tabulation', 2),
-('top-cs-3', 'cs201', 'Hashing & Collision Handling', 'Hash Tables & Chaining', 3),
-('top-cs-4', 'cs201', 'Tree Balancing', 'AVL & Red-Black Trees', 4)
+('top-hash1', 'cs301', 'Hash Tables', 'Hashing & Collision Handling', 1)
 ON CONFLICT (topic_id) DO NOTHING;
 
 -- 4. Enable Development RLS Policies (Allow Read & Write from App)
@@ -25,7 +26,7 @@ DECLARE
         'instructors', 'courses', 'topics', 'documents', 'chunks', 
         'students', 'enrollments', 'student_profiles', 'diagnostic_questions', 
         'diagnostic_results', 'sessions', 'session_messages', 'student_answers', 
-        'answer_citations', 'mastery_checks', 'retry_attempts'
+        'answer_citations', 'mastery_checks', 'retry_attempts', 'xp_log'
     ];
 BEGIN
     FOREACH t IN ARRAY tables LOOP
