@@ -67,12 +67,36 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("instructor_id")
+      .eq("user_id", currentUser.user_id)
+      .maybeSingle();
+    const instructorId = userRow?.instructor_id;
+    if (!instructorId) {
+      return NextResponse.json({ error: "Something went wrong. Try again." }, { status: 500 });
+    }
+
     const body = await req.json();
+    const { documentId } = body;
+    if (!documentId) {
+      return NextResponse.json({ error: "documentId is required" }, { status: 400 });
+    }
+
+    // Verify ownership
+    const { data: docRow } = await supabase
+      .from("documents")
+      .select("instructor_id")
+      .eq("document_id", documentId)
+      .maybeSingle();
+    if (!docRow || docRow.instructor_id !== instructorId) {
+      return NextResponse.json({ error: "File not found or forbidden" }, { status: 404 });
+    }
 
     const response = await fetch(`${FASTAPI_URL}/upload`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ documentId }),
     });
 
     if (!response.ok) {

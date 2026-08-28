@@ -283,33 +283,21 @@ export default function CourseUploadPage() {
     const fileToRemove = files.find((f) => f.id === id);
     setFiles((prev) => prev.filter((f) => f.id !== id));
     setConfirmRemoveId(null);
-    if (!session) return;
+    if (!session || !fileToRemove) return;
 
-    // A file uploaded earlier in this session knows its r2Key — route the removal
-    // through /api/upload so FastAPI also cleans up R2 and the RAG chunks. A file
-    // fetched from a page load only has its document id, so fall back to a
-    // DB-only delete (r2Key isn't persisted anywhere to recover it from).
-    if (fileToRemove?.documentId && fileToRemove?.r2Key) {
-      try {
-        await fetch("/api/upload", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
-          body: JSON.stringify({
-            documentId: fileToRemove.documentId,
-            r2Key: fileToRemove.r2Key,
-          }),
-        });
-      } catch (err) {
-        console.error("Failed to delete file from backend", err);
-      }
-      return;
-    }
+    // Files loaded from the DB only have `id` (which IS the document_id).
+    // Freshly uploaded files also set `documentId`. Use whichever is available.
+    const docId = fileToRemove.documentId ?? fileToRemove.id;
 
-    const res = await fetch(`/api/instructor/documents/${id}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${session.token}` },
-    });
-    if (!res.ok) {
+    try {
+      const res = await fetch("/api/upload", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ documentId: docId }),
+      });
+      if (!res.ok) throw new Error("Failed");
+    } catch (err) {
+      console.error("Failed to delete file from backend", err);
       showToast("Couldn't remove that file — try again.");
     }
   }

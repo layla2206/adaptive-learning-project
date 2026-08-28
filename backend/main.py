@@ -265,7 +265,8 @@ async def upload_document(
             "course_id": courseId,
             "topic_id": topicId,
             "file_name": filename,
-            "file_type": extension.replace(".", "") or "file"
+            "file_type": extension.replace(".", "") or "file",
+            "r2_key": r2_key
         }
         
         doc_response = supabase.table("documents").insert(db_doc).execute()
@@ -320,21 +321,21 @@ async def upload_document(
 
 class DeleteRequest(BaseModel):
     documentId: str
-    r2Key: str
 
 @app.delete("/upload")
 async def delete_document(req: DeleteRequest):
     try:
         doc_id = req.documentId[:10]
         
-        # 1. Delete chunks
-        supabase.table("chunks").delete().eq("document_id", doc_id).execute()
+        # 1. Get R2 Key
+        doc_res = supabase.table("documents").select("r2_key").eq("document_id", doc_id).maybe_single().execute()
         
-        # 2. Delete document
+        # 2. Delete document (chunks are deleted via ON DELETE CASCADE)
         supabase.table("documents").delete().eq("document_id", doc_id).execute()
         
         # 3. Delete from R2
-        s3_client.delete_object(Bucket=r2_bucket_name, Key=req.r2Key)
+        if doc_res.data and doc_res.data.get("r2_key"):
+            s3_client.delete_object(Bucket=r2_bucket_name, Key=doc_res.data["r2_key"])
         
         return {"success": True}
     except Exception as e:

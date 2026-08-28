@@ -91,32 +91,3 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ do
   return NextResponse.json({ ok: true, lectureNumber: update.lecture_number, topicId: update.topic_id });
 }
 
-export async function DELETE(req: NextRequest, { params }: { params: Promise<{ documentId: string }> }) {
-  const currentUser = getCurrentUser(req);
-  if (!currentUser || currentUser.role !== "instructor") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-  const { documentId } = await params;
-
-  const { data: userRow } = await supabase
-    .from("users")
-    .select("instructor_id")
-    .eq("user_id", currentUser.user_id)
-    .maybeSingle();
-  if (!userRow?.instructor_id) {
-    return NextResponse.json({ error: "Something went wrong. Try again." }, { status: 500 });
-  }
-
-  const doc = await resolveOwnedDocument(userRow.instructor_id, documentId);
-  if (!doc) {
-    return NextResponse.json({ error: "File not found" }, { status: 404 });
-  }
-
-  const { error } = await supabase.from("documents").delete().eq("document_id", documentId);
-  if (error) {
-    console.error("Document delete error:", error.message);
-    return NextResponse.json({ error: "Something went wrong. Try again." }, { status: 500 });
-  }
-
-  return NextResponse.json({ ok: true });
-}
