@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import boto3
 from supabase import create_client, Client
 import PyPDF2
+import httpx
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
@@ -165,6 +166,12 @@ EMBEDDING_BATCH_SIZE = 50
 EMBEDDING_RATE_LIMIT_BACKOFF_SECONDS = 60
 EMBEDDING_MAX_RATE_LIMIT_RETRIES = 8
 
+# Separate from quota: the connection itself can drop mid-request (observed:
+# httpx.ConnectError / "Connection reset by peer") with nothing to do with
+# rate limits. Short backoff, since there's no window to wait out.
+EMBEDDING_NETWORK_RETRY_SECONDS = 5
+EMBEDDING_MAX_NETWORK_RETRIES = 5
+
 
 def _normalize(vector: List[float]) -> List[float]:
     """gemini-embedding-001 requires manual L2 normalization when requesting a
@@ -177,11 +184,14 @@ def _normalize(vector: List[float]) -> List[float]:
 
 
 def _embed_batch(batch: List[str], task_type: str) -> List[List[float]]:
-    """Embeds one batch, retrying just this batch on a 429 — a later batch
-    failing must not force re-submitting earlier batches that already
-    succeeded (that was silently multiplying quota usage: a 3-batch document
-    failing on batch 3 used to retry all 3 batches, every retry)."""
-    for attempt in range(EMBEDDING_MAX_RATE_LIMIT_RETRIES + 1):
+    """Embeds one batch, retrying just this batch on a 429 or a dropped
+    connection — a later batch failing must not force re-submitting earlier
+    batches that already succeeded (that was silently multiplying quota
+    usage: a 3-batch document failing on batch 3 used to retry all 3
+    batches, every retry)."""
+    rate_limit_attempt = 0
+    network_attempt = 0
+    while True:
         try:
             response = gemini_client.models.embed_content(
                 model=EMBEDDING_MODEL,
@@ -193,13 +203,23 @@ def _embed_batch(batch: List[str], task_type: str) -> List[List[float]]:
             )
             return [_normalize(emb.values) for emb in response.embeddings]
         except ClientError as e:
-            if e.code != 429 or attempt == EMBEDDING_MAX_RATE_LIMIT_RETRIES:
+            if e.code != 429 or rate_limit_attempt == EMBEDDING_MAX_RATE_LIMIT_RETRIES:
                 raise
+            rate_limit_attempt += 1
             print(
                 f"      embedding rate limited — waiting {EMBEDDING_RATE_LIMIT_BACKOFF_SECONDS}s "
-                f"before retrying this batch (attempt {attempt + 1}/{EMBEDDING_MAX_RATE_LIMIT_RETRIES})..."
+                f"before retrying this batch (attempt {rate_limit_attempt}/{EMBEDDING_MAX_RATE_LIMIT_RETRIES})..."
             )
             time.sleep(EMBEDDING_RATE_LIMIT_BACKOFF_SECONDS)
+        except httpx.TransportError as e:
+            if network_attempt == EMBEDDING_MAX_NETWORK_RETRIES:
+                raise
+            network_attempt += 1
+            print(
+                f"      connection error ({e}) — waiting {EMBEDDING_NETWORK_RETRY_SECONDS}s "
+                f"before retrying this batch (attempt {network_attempt}/{EMBEDDING_MAX_NETWORK_RETRIES})..."
+            )
+            time.sleep(EMBEDDING_NETWORK_RETRY_SECONDS)
 
 
 def generate_embeddings(texts: List[str], task_type: str = "RETRIEVAL_DOCUMENT") -> List[List[float]]:
