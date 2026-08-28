@@ -42,6 +42,7 @@ export function TutorStoreProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
+    setLoading(true);
     try {
       const res = await fetch("/api/student/dashboard", {
         headers: { Authorization: `Bearer ${session.token}` },

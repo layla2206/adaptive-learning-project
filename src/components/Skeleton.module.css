@@ -1,0 +1,22 @@
+.bar {
+  display: block;
+  background: linear-gradient(90deg, var(--bg-card-hover) 25%, var(--line) 50%, var(--bg-card-hover) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar {
+    animation: none;
+    background: var(--bg-card-hover);
+  }
+}

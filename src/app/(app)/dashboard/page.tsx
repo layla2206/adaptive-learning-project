@@ -10,6 +10,8 @@ import ProgressRing from "@/components/ProgressRing";
 import TagRow from "@/components/TagRow";
 import StreakChip from "@/components/StreakChip";
 import WeekDots from "@/components/WeekDots";
+import Skeleton from "@/components/Skeleton";
+import CardSkeleton from "@/components/CardSkeleton";
 import { PlusIcon } from "@/components/icons";
 import styles from "./page.module.css";
 
@@ -28,26 +30,44 @@ export default function DashboardPage() {
       <header className={styles.header}>
         <div>
           <p className="eyebrow">{formatEyebrowDate(now)}</p>
-          <h1 className={styles.greeting}>
-            {greetingForHour(now.getHours())}, {userName}
-          </h1>
+          {loading ? (
+            <Skeleton width={220} height={34} className={styles.greetingSkeleton} />
+          ) : (
+            <h1 className={styles.greeting}>
+              {greetingForHour(now.getHours())}, {userName}
+            </h1>
+          )}
         </div>
         <div className={styles.avatar} title={userName}>
-          {initials(userName)}
+          {loading ? "" : initials(userName)}
         </div>
       </header>
 
-      <Link href="/score" className={styles.hero} aria-label="View your score: weekly calendar and trophy cabinet">
-        <div className={styles.heroLeft}>
-          <StreakChip days={streakDays} />
-          <WeekDots days={week} />
+      {loading ? (
+        <div className={styles.hero}>
+          <div className={styles.heroLeft}>
+            <Skeleton width={110} height={28} radius={999} />
+            <Skeleton width={180} height={16} />
+          </div>
+          <div className={styles.heroDivider} />
+          <div className={styles.xpBlock}>
+            <Skeleton width={70} height={32} className={styles.xpValueSkeleton} />
+            <Skeleton width={60} height={11} />
+          </div>
         </div>
-        <div className={styles.heroDivider} />
-        <div className={styles.xpBlock}>
-          <div className={styles.xpValue}>{totalXp.toLocaleString()}</div>
-          <div className={styles.xpLabel}>Total XP</div>
-        </div>
-      </Link>
+      ) : (
+        <Link href="/score" className={styles.hero} aria-label="View your score: weekly calendar and trophy cabinet">
+          <div className={styles.heroLeft}>
+            <StreakChip days={streakDays} />
+            <WeekDots days={week} />
+          </div>
+          <div className={styles.heroDivider} />
+          <div className={styles.xpBlock}>
+            <div className={styles.xpValue}>{totalXp.toLocaleString()}</div>
+            <div className={styles.xpLabel}>Total XP</div>
+          </div>
+        </Link>
+      )}
 
       <div className={styles.sectionHead}>
         <h2>Your Subjects</h2>
@@ -58,6 +78,13 @@ export default function DashboardPage() {
       )}
 
       <div className={styles.subjectGrid}>
+        {loading && (
+          <>
+            <CardSkeleton />
+            <CardSkeleton />
+            <CardSkeleton />
+          </>
+        )}
         {subjects.map((subject) => {
           const progress = subjectProgress(subject);
           const mastered = masteredCount(subject);

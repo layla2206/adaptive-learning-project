@@ -8,8 +8,10 @@ import Card from "@/components/Card";
 import ArrowButton from "@/components/ArrowButton";
 import ProgressRing from "@/components/ProgressRing";
 import MasteryBar from "@/components/MasteryBar";
-import StatsStrip, { type Stat } from "@/components/StatsStrip";
+import StatsStrip, { StatsStripSkeleton, type Stat } from "@/components/StatsStrip";
 import StuckTable from "@/components/instructor/StuckTable";
+import CardSkeleton from "@/components/CardSkeleton";
+import Skeleton from "@/components/Skeleton";
 import { UploadIcon, UsersIcon } from "@/components/icons";
 import styles from "./page.module.css";
 
@@ -49,17 +51,21 @@ export default function InstructorDashboardPage() {
       <header className={styles.header}>
         <div>
           <p className="eyebrow">{formatEyebrowDate(now)}</p>
-          <h1 className={styles.greeting}>
-            {greetingForHour(now.getHours())}, {instructorName}
-          </h1>
+          {loading ? (
+            <Skeleton width={220} height={34} className={styles.greetingSkeleton} />
+          ) : (
+            <h1 className={styles.greeting}>
+              {greetingForHour(now.getHours())}, {instructorName}
+            </h1>
+          )}
         </div>
         <div className={styles.avatar} title={instructorName}>
-          {initials(instructorName || "?")}
+          {loading ? "" : initials(instructorName || "?")}
         </div>
       </header>
 
       <div className={styles.statsWrap}>
-        <StatsStrip stats={stats} />
+        {loading ? <StatsStripSkeleton /> : <StatsStrip stats={stats} />}
       </div>
 
       <div className={styles.sectionHead}>
@@ -102,6 +108,12 @@ export default function InstructorDashboardPage() {
       {!loading && courses.length === 0 && <p className={styles.meta}>No courses yet.</p>}
 
       <div className={styles.courseGrid}>
+        {loading && (
+          <>
+            <CardSkeleton />
+            <CardSkeleton />
+          </>
+        )}
         {courses.map((course) => (
           <Card key={course.id} href={`/instructor/courses/${course.id}`} flagged={course.flagged} className={styles.courseCard}>
             <div className={styles.ringWrap}>

@@ -135,6 +135,10 @@
   text-align: right;
 }
 
+.skeletonRight {
+  margin-left: auto;
+}
+
 .actionButton {
   font-family: var(--font-mono);
   text-transform: uppercase;

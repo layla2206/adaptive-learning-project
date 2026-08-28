@@ -1,0 +1,9 @@
+.card {
+  gap: 10px;
+  cursor: default;
+}
+
+.card:hover {
+  transform: none;
+  background: var(--bg-card);
+}

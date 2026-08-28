@@ -5,10 +5,11 @@ import AppHeader from "@/components/AppHeader";
 import WeeklyCalendar from "@/components/score/WeeklyCalendar";
 import MasteryOverview from "@/components/score/MasteryOverview";
 import TrophyCabinet from "@/components/score/TrophyCabinet";
+import SectionSkeleton from "@/components/score/SectionSkeleton";
 import styles from "./page.module.css";
 
 export default function ScorePage() {
-  const { subjects, userName, streakDays } = useTutorStore();
+  const { subjects, userName, streakDays, loading } = useTutorStore();
 
   return (
     <div className={`shell ${styles.page}`}>
@@ -23,19 +24,19 @@ export default function ScorePage() {
       <div className={styles.section}>
         <p className="eyebrow">Weekly Goal</p>
         <h2 className={styles.sectionTitle}>Lecture Calendar</h2>
-        <WeeklyCalendar subjects={subjects} />
+        {loading ? <SectionSkeleton lines={2} /> : <WeeklyCalendar subjects={subjects} />}
       </div>
 
       <div className={styles.section}>
         <p className="eyebrow">Progress</p>
         <h2 className={styles.sectionTitle}>Mastery</h2>
-        <MasteryOverview subjects={subjects} />
+        {loading ? <SectionSkeleton lines={4} /> : <MasteryOverview subjects={subjects} />}
       </div>
 
       <div className={styles.section}>
         <p className="eyebrow">Achievements</p>
         <h2 className={styles.sectionTitle}>Trophy Cabinet</h2>
-        <TrophyCabinet subjects={subjects} streakDays={streakDays} />
+        {loading ? <SectionSkeleton lines={3} /> : <TrophyCabinet subjects={subjects} streakDays={streakDays} />}
       </div>
     </div>
   );
