@@ -27,15 +27,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ cour
     return NextResponse.json({ error: "Course not found" }, { status: 404 });
   }
 
-  const { count: rosterSize } = await supabase
-    .from("enrollments")
-    .select("enrollment_id", { count: "exact", head: true })
-    .eq("course_id", courseId);
+  const [{ count: rosterSize }, { data: topicRows }] = await Promise.all([
+    supabase.from("enrollments").select("enrollment_id", { count: "exact", head: true }).eq("course_id", courseId),
+    supabase.from("topics").select("topic_id, topic_name, sort_order").eq("course_id", courseId).order("sort_order"),
+  ]);
 
   return NextResponse.json({
     id: course.course_id,
     name: course.course_name,
     rosterSize: rosterSize ?? 0,
     instructorName: instructorRow?.name ?? "",
+    topics: (topicRows ?? []).map((t) => ({ id: t.topic_id, name: t.topic_name })),
   });
 }

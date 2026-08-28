@@ -29,12 +29,18 @@ export interface UploadedFile {
   id: string;
   name: string;
   lectureNumber: number;
+  topicId?: string | null;
   uploadedAt: string;
   status: FileStatus;
   progress?: number;
   errorReason?: string;
   documentId?: string;
   r2Key?: string;
+}
+
+export interface CourseTopic {
+  id: string;
+  name: string;
 }
 
 // Real data for all of the above is fetched at render time from

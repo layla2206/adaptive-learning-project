@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getSession } from "@/lib/session";
-import type { UploadedFile } from "@/lib/instructorData";
+import type { CourseTopic, UploadedFile } from "@/lib/instructorData";
 import AppHeader from "@/components/AppHeader";
 import { UploadIcon, CheckIcon, RefreshIcon } from "@/components/icons";
 import styles from "./page.module.css";
@@ -14,7 +14,10 @@ interface CourseInfo {
   name: string;
   rosterSize: number;
   instructorName: string;
+  topics: CourseTopic[];
 }
+
+const NO_TOPIC = "";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".pptx"];
 const MAX_SIZE_BYTES = 25 * 1024 * 1024;
@@ -42,6 +45,29 @@ function validateFile(file: File): string | null {
 
 const IN_FLIGHT: UploadedFile["status"][] = ["uploading", "failed"];
 
+function TopicSelect({
+  id,
+  value,
+  topics,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  topics: CourseTopic[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <select id={id} className={styles.tagInput} value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value={NO_TOPIC}>No topic</option>
+      {topics.map((t) => (
+        <option key={t.id} value={t.id}>
+          {t.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export default function CourseUploadPage() {
   const params = useParams<{ courseId: string }>();
   const [course, setCourse] = useState<CourseInfo | null>(null);
@@ -51,8 +77,10 @@ export default function CourseUploadPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [rejections, setRejections] = useState<string[]>([]);
   const [taggingDraft, setTaggingDraft] = useState<Record<string, string>>({});
+  const [taggingTopicDraft, setTaggingTopicDraft] = useState<Record<string, string>>({});
   const [retagId, setRetagId] = useState<string | null>(null);
   const [retagLecture, setRetagLecture] = useState("");
+  const [retagTopicId, setRetagTopicId] = useState(NO_TOPIC);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [fileMap, setFileMap] = useState<Map<string, File>>(new Map());
@@ -184,13 +212,13 @@ export default function CourseUploadPage() {
     uploadToR2(id, fileObj);
   }
 
-  async function patchLectureNumber(documentId: string, lectureNumber: number): Promise<boolean> {
+  async function patchDocument(documentId: string, updates: { lectureNumber?: number; topicId?: string | null }): Promise<boolean> {
     const session = getSession();
     if (!session) return false;
     const res = await fetch(`/api/instructor/documents/${documentId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
-      body: JSON.stringify({ lectureNumber }),
+      body: JSON.stringify(updates),
     });
     return res.ok;
   }
@@ -199,19 +227,29 @@ export default function CourseUploadPage() {
     setTaggingDraft((prev) => ({ ...prev, [id]: value }));
   }
 
+  function handleTagTopicChange(id: string, value: string) {
+    setTaggingTopicDraft((prev) => ({ ...prev, [id]: value }));
+  }
+
   async function handleConfirmTag(id: string) {
     const value = taggingDraft[id];
     if (!value || !value.trim()) return;
     const lectureNumber = Number(value);
+    const topicId = taggingTopicDraft[id] || NO_TOPIC;
     const fileName = files.find((f) => f.id === id)?.name ?? "File";
 
-    const ok = await patchLectureNumber(id, lectureNumber);
+    const ok = await patchDocument(id, { lectureNumber, topicId: topicId || null });
     if (!ok) {
-      showToast("Couldn't save that lecture number — try again.");
+      showToast("Couldn't save that lecture — try again.");
       return;
     }
-    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, lectureNumber, status: "ready" } : f)));
+    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, lectureNumber, topicId: topicId || null, status: "ready" } : f)));
     setTaggingDraft((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setTaggingTopicDraft((prev) => {
       const next = { ...prev };
       delete next[id];
       return next;
@@ -222,19 +260,22 @@ export default function CourseUploadPage() {
   function handleStartRetag(file: UploadedFile) {
     setRetagId(file.id);
     setRetagLecture(String(file.lectureNumber));
+    setRetagTopicId(file.topicId ?? NO_TOPIC);
   }
 
   async function handleConfirmRetag() {
     if (!retagId || !retagLecture.trim()) return;
     const lectureNumber = Number(retagLecture);
-    const ok = await patchLectureNumber(retagId, lectureNumber);
+    const topicId = retagTopicId || null;
+    const ok = await patchDocument(retagId, { lectureNumber, topicId });
     if (!ok) {
-      showToast("Couldn't save that lecture number — try again.");
+      showToast("Couldn't save that lecture — try again.");
       return;
     }
-    setFiles((prev) => prev.map((f) => (f.id === retagId ? { ...f, lectureNumber } : f)));
+    setFiles((prev) => prev.map((f) => (f.id === retagId ? { ...f, lectureNumber, topicId } : f)));
     setRetagId(null);
     setRetagLecture("");
+    setRetagTopicId(NO_TOPIC);
   }
 
   async function handleRemove(id: string) {
@@ -276,6 +317,8 @@ export default function CourseUploadPage() {
   const inFlight = files.filter((f) => IN_FLIGHT.includes(f.status));
   const settled = files.filter((f) => !IN_FLIGHT.includes(f.status)).sort((a, b) => a.lectureNumber - b.lectureNumber);
   const orderedFiles = [...inFlight, ...settled];
+  const courseTopics = course.topics;
+  const topicNameById = new Map(courseTopics.map((t) => [t.id, t.name]));
 
   function renderRow(file: UploadedFile) {
     if (file.status === "uploading") {
@@ -312,6 +355,15 @@ export default function CourseUploadPage() {
               value={draft}
               onChange={(e) => handleTagChange(file.id, e.target.value)}
               autoFocus
+            />
+            <label className={styles.tagLabel} htmlFor={`topic-${file.id}`}>
+              Topic
+            </label>
+            <TopicSelect
+              id={`topic-${file.id}`}
+              value={taggingTopicDraft[file.id] ?? NO_TOPIC}
+              topics={courseTopics}
+              onChange={(value) => handleTagTopicChange(file.id, value)}
             />
             <button
               type="button"
@@ -358,6 +410,12 @@ export default function CourseUploadPage() {
                 onChange={(e) => setRetagLecture(e.target.value)}
                 autoFocus
               />
+              <TopicSelect
+                id={`retag-topic-${file.id}`}
+                value={retagTopicId}
+                topics={courseTopics}
+                onChange={setRetagTopicId}
+              />
               <button type="button" className={styles.retagSave} onClick={handleConfirmRetag}>
                 Save
               </button>
@@ -367,7 +425,8 @@ export default function CourseUploadPage() {
             </div>
           ) : (
             <p className={styles.rowMeta}>
-              Lecture {file.lectureNumber} · {file.uploadedAt}
+              Lecture {file.lectureNumber} · {file.uploadedAt} ·{" "}
+              {file.topicId ? (topicNameById.get(file.topicId) ?? "Unknown topic") : "Untagged"}
             </p>
           )}
         </div>

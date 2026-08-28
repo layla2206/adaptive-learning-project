@@ -33,18 +33,62 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ do
     return NextResponse.json({ error: "File not found" }, { status: 404 });
   }
 
-  const { lectureNumber } = await req.json();
-  if (typeof lectureNumber !== "number" || lectureNumber < 1) {
-    return NextResponse.json({ error: "lectureNumber must be a positive number" }, { status: 400 });
+  const body = await req.json();
+  const { lectureNumber, topicId } = body as { lectureNumber?: unknown; topicId?: unknown };
+
+  const update: { lecture_number?: number; topic_id?: string | null } = {};
+
+  if (lectureNumber !== undefined) {
+    if (typeof lectureNumber !== "number" || lectureNumber < 1) {
+      return NextResponse.json({ error: "lectureNumber must be a positive number" }, { status: 400 });
+    }
+    update.lecture_number = lectureNumber;
   }
 
-  const { error } = await supabase.from("documents").update({ lecture_number: lectureNumber }).eq("document_id", documentId);
+  if (topicId !== undefined) {
+    if (topicId !== null && typeof topicId !== "string") {
+      return NextResponse.json({ error: "topicId must be a string or null" }, { status: 400 });
+    }
+    if (topicId !== null) {
+      const { data: topicRow } = await supabase
+        .from("topics")
+        .select("topic_id")
+        .eq("topic_id", topicId)
+        .maybeSingle();
+      if (!topicRow) {
+        return NextResponse.json({ error: "Unknown topic" }, { status: 404 });
+      }
+    }
+    update.topic_id = topicId;
+  }
+
+  if (Object.keys(update).length === 0) {
+    return NextResponse.json({ error: "lectureNumber and/or topicId is required" }, { status: 400 });
+  }
+
+  const { error } = await supabase.from("documents").update(update).eq("document_id", documentId);
   if (error) {
     console.error("Document tag update error:", error.message);
     return NextResponse.json({ error: "Something went wrong. Try again." }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, lectureNumber });
+  // Existing chunks were embedded with whatever topic_id the document had at
+  // upload time (main.py's /upload copies it onto each chunk row) — re-tagging
+  // the document afterward has to also re-sync its chunks, or they'd stay
+  // permanently unreachable by topic-filtered retrieval (match_chunks, the
+  // diagnostic/mastery/retry endpoints) despite the document showing a topic.
+  if (update.topic_id !== undefined) {
+    const { error: chunkError } = await supabase
+      .from("chunks")
+      .update({ topic_id: update.topic_id })
+      .eq("document_id", documentId);
+    if (chunkError) {
+      console.error("Chunk topic sync error:", chunkError.message);
+      return NextResponse.json({ error: "Document saved, but its chunks couldn't be re-tagged. Try again." }, { status: 500 });
+    }
+  }
+
+  return NextResponse.json({ ok: true, lectureNumber: update.lecture_number, topicId: update.topic_id });
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ documentId: string }> }) {
