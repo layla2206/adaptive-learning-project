@@ -69,7 +69,7 @@ def generate_grounded_answer(question: str, chunks: List[dict]) -> str:
 
 
 def parse_document(file_bytes: bytes, file_type: str) -> str:
-    """Extracts text from PDF or raw text files."""
+    """Extracts text from PDF, Office docs, or raw text files."""
     text = ""
     file_type = file_type.lower().replace(".", "")
 
@@ -82,6 +82,34 @@ def parse_document(file_bytes: bytes, file_type: str) -> str:
                 text += page_text + "\n"
     elif file_type in ["txt", "md", "csv", "json"]:
         text = file_bytes.decode("utf-8")
+    elif file_type == "docx":
+        from io import BytesIO
+        import zipfile
+        import xml.etree.ElementTree as ET
+        try:
+            with zipfile.ZipFile(BytesIO(file_bytes)) as zf:
+                xml_content = zf.read('word/document.xml')
+                tree = ET.fromstring(xml_content)
+                for node in tree.iter():
+                    if node.tag.endswith('}t') and node.text:
+                        text += node.text + " "
+        except Exception as e:
+            raise ValueError(f"Failed to parse docx: {e}")
+    elif file_type == "pptx":
+        from io import BytesIO
+        import zipfile
+        import xml.etree.ElementTree as ET
+        try:
+            with zipfile.ZipFile(BytesIO(file_bytes)) as zf:
+                for item in zf.namelist():
+                    if item.startswith('ppt/slides/slide') and item.endswith('.xml'):
+                        xml_content = zf.read(item)
+                        tree = ET.fromstring(xml_content)
+                        for node in tree.iter():
+                            if node.tag.endswith('}t') and node.text:
+                                text += node.text + " "
+        except Exception as e:
+            raise ValueError(f"Failed to parse pptx: {e}")
     else:
         raise ValueError(f"Unsupported file type for parsing: {file_type}")
 

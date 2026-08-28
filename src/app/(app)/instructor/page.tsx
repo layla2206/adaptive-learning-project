@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { formatEyebrowDate, initials, greetingForHour } from "@/lib/utils";
 import { getSession } from "@/lib/session";
 import type { Course, StuckTopic } from "@/lib/instructorData";
@@ -12,7 +12,7 @@ import StatsStrip, { StatsStripSkeleton, type Stat } from "@/components/StatsStr
 import StuckTable from "@/components/instructor/StuckTable";
 import CardSkeleton from "@/components/CardSkeleton";
 import Skeleton from "@/components/Skeleton";
-import { UploadIcon, UsersIcon } from "@/components/icons";
+import { UploadIcon, UsersIcon, CheckIcon } from "@/components/icons";
 import styles from "./page.module.css";
 
 interface InstructorDashboard {
@@ -26,6 +26,9 @@ export default function InstructorDashboardPage() {
   const now = useMemo(() => new Date(), []);
   const [dashboard, setDashboard] = useState<InstructorDashboard | null>(null);
   const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const TOAST_MS = 4000;
 
   useEffect(() => {
     async function load() {
@@ -45,6 +48,12 @@ export default function InstructorDashboardPage() {
   const stats = dashboard?.stats ?? [];
   const courses = dashboard?.courses ?? [];
   const stuckTopicsByCourse = dashboard?.stuckTopicsByCourse ?? {};
+
+  function showToast(message: string) {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(message);
+    toastTimerRef.current = setTimeout(() => setToast(null), TOAST_MS);
+  }
 
   return (
     <div className={`shell ${styles.page}`}>
@@ -87,7 +96,10 @@ export default function InstructorDashboardPage() {
             <ArrowButton />
           </div>
         </Card>
-        <Card className={styles.actionCard}>
+        <Card
+          onClick={() => showToast("Add Students interface coming soon!")}
+          className={styles.actionCard}
+        >
           <span className={styles.actionIcon}>
             <UsersIcon size={20} />
           </span>
@@ -136,6 +148,13 @@ export default function InstructorDashboardPage() {
         <h2>Where Students Are Stuck</h2>
       </div>
       {courses.length > 0 && <StuckTable courses={courses} stuckTopicsByCourse={stuckTopicsByCourse} />}
+
+      {toast && (
+        <div className={styles.toast}>
+          <CheckIcon size={13} />
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
