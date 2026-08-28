@@ -10,7 +10,7 @@ import AppHeader from "@/components/AppHeader";
 import Confetti from "@/components/Confetti";
 import MermaidDiagram from "@/components/MermaidDiagram";
 import TutorMarkdown from "@/components/TutorMarkdown";
-import { ArrowIcon, CheckIcon, RefreshIcon } from "@/components/icons";
+import { ArrowIcon, BookIcon, CheckIcon, InfoIcon, LightbulbIcon, RefreshIcon } from "@/components/icons";
 import styles from "./page.module.css";
 
 type Stage =
@@ -70,6 +70,77 @@ function nextId() {
   return `m${msgId}`;
 }
 
+const RETRY_TAGS = new Set(["Worked Example", "Hands-on Task", "Analogy", "Diagram", "Mind Map"]);
+
+type MessageKind = "explanation" | "feedback" | "hint" | "retry" | "result";
+
+const KIND_ICON: Record<MessageKind, typeof BookIcon> = {
+  explanation: BookIcon,
+  feedback: InfoIcon,
+  hint: LightbulbIcon,
+  retry: RefreshIcon,
+  result: CheckIcon,
+};
+
+/** Which visual category a tutor bubble's tag belongs to, for the icon +
+ * accent color that distinguishes explanations/feedback/hints/retry
+ * formats/results at a glance -- untagged or user bubbles get none. */
+function messageKind(tag?: string): MessageKind | null {
+  if (!tag) return null;
+  if (tag === "Grounded Explanation") return "explanation";
+  if (tag === "Feedback") return "feedback";
+  if (tag.startsWith("Hint")) return "hint";
+  if (tag === "Result") return "result";
+  if (RETRY_TAGS.has(tag)) return "retry";
+  return null;
+}
+
+interface HistoryRow {
+  text: string;
+  tag?: string;
+  citations?: Citation[];
+  diagram?: string | null;
+  isDiagram?: boolean;
+  hintsUsed?: number;
+  maxHints?: number;
+}
+
+/**
+ * Rebuilds the chat + resumable stage from persisted session_messages.
+ * Only "Grounded Explanation", a retry-format tag, or "Hint" as the LAST message
+ * is a stage we know how to resume into (waiting on "Continue" or another
+ * submission); anything else (no history, or a session that already reached
+ * "Result") falls back to a fresh diagnose so we're never left resuming into an
+ * inconsistent stage.
+ */
+function restoreFromHistory(rows: HistoryRow[]): { messages: Message[]; stage: Stage; hasRetried: boolean } | null {
+  if (rows.length === 0) return null;
+  const lastRow = rows[rows.length - 1];
+  const lastTag = lastRow?.tag;
+  const lastIsRetry = RETRY_TAGS.has(lastTag ?? "");
+  const lastIsHint = lastTag === "Hint";
+  if (lastTag !== "Grounded Explanation" && !lastIsRetry && !lastIsHint) return null;
+
+  const messages: Message[] = rows.map((row) => ({
+    id: nextId(),
+    role: "tutor",
+    tag: row.tag === "Hint" ? `Hint ${row.hintsUsed}/${row.maxHints}` : row.tag,
+    paragraphs: row.isDiagram
+      ? row.citations?.length
+        ? [`Sources: ${row.citations.map((c) => `${c.mark} ${c.source}`).join(" · ")}`]
+        : []
+      : [row.text],
+    citations: row.isDiagram ? undefined : row.citations,
+    diagram: row.isDiagram ? row.text : undefined,
+  }));
+
+  return {
+    messages,
+    stage: lastIsRetry ? "retry-shown" : lastIsHint ? "check-ask" : "explain-shown",
+    hasRetried: rows.some((row) => RETRY_TAGS.has(row.tag ?? "")),
+  };
+}
+
 function ThinkingIndicator({ label }: { label: string }) {
   return (
     <div className={styles.bubbleRow}>
@@ -109,17 +180,7 @@ export default function TopicPage() {
     const topicId = topic.id;
     let cancelled = false;
 
-    async function loadQuestions() {
-      setDiagLoading(true);
-      setDiagError(null);
-      const session = getSession();
-      if (!session) {
-        if (!cancelled) {
-          setDiagError("You'll need to be signed in to start the diagnostic — try refreshing.");
-          setDiagLoading(false);
-        }
-        return;
-      }
+    async function loadQuestions(session: { token: string }) {
       try {
         const response = await fetch("/api/diagnostic/generate", {
           method: "POST",
@@ -136,7 +197,43 @@ export default function TopicPage() {
       }
     }
 
-    loadQuestions();
+    async function resumeOrStart() {
+      setDiagLoading(true);
+      setDiagError(null);
+      const session = getSession();
+      if (!session) {
+        if (!cancelled) {
+          setDiagError("You'll need to be signed in to start the diagnostic — try refreshing.");
+          setDiagLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const historyRes = await fetch(`/api/session/history?topicId=${topicId}`, {
+          headers: { Authorization: `Bearer ${session.token}` },
+        });
+        const historyData = await historyRes.json();
+        if (cancelled) return;
+        if (historyRes.ok && historyData.sessionId) {
+          const restored = restoreFromHistory(historyData.messages ?? []);
+          if (restored) {
+            setSessionId(historyData.sessionId);
+            setMessages(restored.messages);
+            setHasRetried(restored.hasRetried);
+            setStage(restored.stage);
+            setDiagLoading(false);
+            return;
+          }
+        }
+      } catch {
+        // Couldn't check for a resumable session — fall through to a fresh diagnostic.
+      }
+
+      if (!cancelled) loadQuestions(session);
+    }
+
+    resumeOrStart();
     return () => {
       cancelled = true;
     };
@@ -290,6 +387,16 @@ export default function TopicPage() {
         markTopicMastered(subject.id, topic.id);
         announceMastery(subject.id, topic.id);
         setStage("done");
+        return;
+      }
+
+      if (checkData.hint) {
+        pushMessage({
+          role: "tutor",
+          tag: `Hint ${checkData.hintsUsed}/${checkData.maxHints}`,
+          paragraphs: [`${checkData.feedback}\n\n${checkData.hint}`],
+        });
+        setStage("check-ask");
         return;
       }
 
@@ -511,10 +618,18 @@ export default function TopicPage() {
       )}
 
       <div className={styles.chat}>
-        {messages.map((m) => (
+        {messages.map((m) => {
+          const kind = m.role === "tutor" ? messageKind(m.tag) : null;
+          const KindIcon = kind ? KIND_ICON[kind] : null;
+          return (
           <div key={m.id} className={`${styles.bubbleRow} ${m.role === "user" ? styles.user : ""}`}>
-            <div className={styles.bubble}>
-              {m.tag && <div className={styles.bubbleTag}>{m.tag}</div>}
+            <div className={`${styles.bubble} ${kind ? styles[`kind_${kind}`] : ""}`}>
+              {m.tag && (
+                <div className={styles.bubbleTag}>
+                  {KindIcon && <KindIcon size={12} />}
+                  {m.tag}
+                </div>
+              )}
               {m.diagram && <MermaidDiagram code={m.diagram} />}
               {m.paragraphs.map((p, i) =>
                 m.role === "tutor" ? (
@@ -542,7 +657,8 @@ export default function TopicPage() {
                 ))}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {(stage === "thinking-explain" || stage === "thinking-retry-explain") && (
           <ThinkingIndicator label="Grounding an explanation…" />
