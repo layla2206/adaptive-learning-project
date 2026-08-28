@@ -17,6 +17,7 @@ import re
 import time
 import uuid
 import argparse
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -48,7 +49,7 @@ def sanitize(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]", "_", name)
 
 
-def find_r2_key(course_id: str, file_name: str) -> str | None:
+def find_r2_key(course_id: str, file_name: str) -> Optional[str]:
     sanitized = sanitize(file_name)
     prefix = f"courses/{course_id}/"
     resp = s3_client.list_objects_v2(Bucket=r2_bucket_name, Prefix=prefix)
