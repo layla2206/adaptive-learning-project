@@ -15,8 +15,8 @@ export async function GET(req: NextRequest) {
     { count: totalDocuments },
     { data: enrollments },
   ] = await Promise.all([
-    supabase.from("instructors").select("instructor_id, name, email"),
-    supabase.from("courses").select("course_id, course_name, instructor_id"),
+    supabase.from("instructors").select("instructor_id, name, email, status"),
+    supabase.from("courses").select("course_id, course_name, instructor_id, status"),
     supabase.from("students").select("student_id", { count: "exact", head: true }),
     supabase.from("documents").select("document_id", { count: "exact", head: true }),
     supabase.from("enrollments").select("course_id"),
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
     name: i.name,
     email: i.email,
     coursesCount: courseCountByInstructor.get(i.instructor_id) ?? 0,
-    status: "active" as const,
+    status: (i.status ?? "active") as "active" | "deactivated",
   }));
 
   const platformCourses = (courses ?? []).map((c) => ({
@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
     name: c.course_name,
     instructorName: instructorNameById.get(c.instructor_id) ?? "Unknown",
     studentCount: enrollmentCountByCourse.get(c.course_id) ?? 0,
-    status: "active" as const,
+    status: (c.status ?? "active") as "active" | "deactivated",
   }));
 
   return NextResponse.json({

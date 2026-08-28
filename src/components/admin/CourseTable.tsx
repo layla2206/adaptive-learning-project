@@ -4,15 +4,19 @@ import { useState } from "react";
 import type { AccountStatus, InstructorAccount, PlatformCourse } from "@/lib/adminData";
 import { PlusIcon } from "@/components/icons";
 import { getSession } from "@/lib/session";
+import { useToast } from "@/components/Toast";
 import styles from "./AdminTable.module.css";
 
 export default function CourseTable({
   courses,
   instructors,
+  onChanged,
 }: {
   courses: PlatformCourse[];
   instructors: InstructorAccount[];
+  onChanged?: () => void;
 }) {
+  const toast = useToast();
   const [allCourses, setAllCourses] = useState(courses);
   const [statusById, setStatusById] = useState<Record<string, AccountStatus>>(() =>
     Object.fromEntries(courses.map((c) => [c.id, c.status]))
@@ -33,11 +37,30 @@ export default function CourseTable({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  function toggle(id: string) {
-    setStatusById((prev) => ({
-      ...prev,
-      [id]: prev[id] === "active" ? "deactivated" : "active",
-    }));
+  async function toggle(id: string, name: string) {
+    const nextStatus: AccountStatus = statusById[id] === "active" ? "deactivated" : "active";
+    const previous = statusById[id];
+    setStatusById((prev) => ({ ...prev, [id]: nextStatus }));
+
+    const session = getSession();
+    if (!session) {
+      setStatusById((prev) => ({ ...prev, [id]: previous }));
+      toast("Your session expired — sign in again.", "error");
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/admin/courses/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      if (!res.ok) throw new Error("Failed to update status");
+      toast(`${name} ${nextStatus === "active" ? "reactivated" : "deactivated"}.`);
+    } catch {
+      setStatusById((prev) => ({ ...prev, [id]: previous }));
+      toast("Couldn't update that — try again.", "error");
+    }
   }
 
   function resetForm() {
@@ -82,6 +105,8 @@ export default function CourseTable({
       setStatusById((prev) => ({ ...prev, [data.id]: "active" }));
       resetForm();
       setFormOpen(false);
+      onChanged?.();
+      toast(`${data.name} created.`);
     } catch {
       setError("Couldn't reach the server. Check your connection and try again.");
     } finally {
@@ -174,7 +199,11 @@ export default function CourseTable({
                   {status === "active" ? "Live" : "Deactivated"}
                 </td>
                 <td className={styles.actionCell}>
-                  <button type="button" className={styles.actionButton} onClick={() => toggle(course.id)}>
+                  <button
+                    type="button"
+                    className={styles.actionButton}
+                    onClick={() => toggle(course.id, course.name)}
+                  >
                     {status === "active" ? "Deactivate" : "Reactivate"}
                   </button>
                 </td>
