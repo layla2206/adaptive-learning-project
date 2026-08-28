@@ -1,10 +1,21 @@
 export type TopicState = "locked" | "in-progress" | "mastered";
 
+export interface MistakeTrendEntry {
+  tag: string;
+  count: number;
+}
+
 export interface Topic {
   id: string;
   name: string;
   state: TopicState;
   progressPct: number;
+  level: string | null;
+  weakArea: string | null;
+  /** Recurring mistake types across all mastery-check attempts on this topic,
+   * most frequent first — distinct from `weakArea`, which is just the latest
+   * attempt's tag. Empty when there's no repeated pattern yet. */
+  weakAreaTrend: MistakeTrendEntry[];
 }
 
 export type BuildingKind = "citadel" | "observatory" | "crystal" | "hextower";

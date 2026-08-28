@@ -56,3 +56,63 @@
   font-size: 0.85rem;
   color: var(--ink-faint);
 }
+
+.topicList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-hover);
+}
+
+.topicEntry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.topicRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trendCaption {
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+}
+
+.topicName {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.levelBadge {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.68rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--plum-deep);
+  background: color-mix(in srgb, var(--plum) 14%, transparent);
+  white-space: nowrap;
+}
+
+.weakBadge {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.68rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #b45309;
+  background: rgba(217, 119, 6, 0.14);
+  white-space: nowrap;
+}

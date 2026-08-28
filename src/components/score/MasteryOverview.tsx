@@ -2,6 +2,13 @@ import type { Subject } from "@/lib/types";
 import MasteryBar from "@/components/MasteryBar";
 import styles from "./MasteryOverview.module.css";
 
+const WEAK_AREA_LABELS: Record<string, string> = {
+  concept_confusion: "Concept confusion",
+  calculation_error: "Calculation errors",
+  incomplete: "Incomplete answers",
+  off_topic: "Off-topic answers",
+};
+
 export default function MasteryOverview({ subjects }: { subjects: Subject[] }) {
   const totalTopics = subjects.reduce((sum, s) => sum + s.topics.length, 0);
   const totalMastered = subjects.reduce(
@@ -38,6 +45,35 @@ export default function MasteryOverview({ subjects }: { subjects: Subject[] }) {
                 {mastered} of {total} topic{total === 1 ? "" : "s"} mastered
                 {total > 0 && mastered < total ? ` · ${total - mastered} remaining` : ""}
               </p>
+              {subject.topics.some((t) => t.level) && (
+                <div className={styles.topicList}>
+                  {subject.topics
+                    .filter((t) => t.level)
+                    .map((t) => (
+                      <div key={t.id} className={styles.topicEntry}>
+                        <div className={styles.topicRow}>
+                          <span className={styles.topicName}>{t.name}</span>
+                          <span className={styles.levelBadge} data-level={t.level}>
+                            {t.level}
+                          </span>
+                          {t.weakArea && (
+                            <span className={styles.weakBadge}>
+                              {WEAK_AREA_LABELS[t.weakArea] ?? t.weakArea}
+                            </span>
+                          )}
+                        </div>
+                        {t.weakAreaTrend.length > 0 && (
+                          <p className={styles.trendCaption}>
+                            Recurring:{" "}
+                            {t.weakAreaTrend
+                              .map((e) => `${WEAK_AREA_LABELS[e.tag] ?? e.tag} ×${e.count}`)
+                              .join(" · ")}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                </div>
+              )}
             </div>
           );
         })}

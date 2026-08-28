@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient";
-import type { Topic, TopicState, DayState, Subject } from "./types";
+import type { Topic, TopicState, DayState, Subject, MistakeTrendEntry } from "./types";
 
 const DAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
 
@@ -12,6 +12,39 @@ export interface TopicRow {
 export interface ProfileRow {
   topic_id: string;
   mastery_percent: number;
+  level: string | null;
+  weak_area: string | null;
+}
+
+export interface AnswerMistakeRow {
+  topic_id: string;
+  mistake_tag: string | null;
+}
+
+/**
+ * Recurring mistake types per topic across every graded attempt, most frequent
+ * first — distinct from the single-snapshot `weak_area` on student_profiles,
+ * which only ever reflects the latest check. "none"/null tags (a correct or
+ * untagged attempt) never count as a weak area.
+ */
+export function computeWeakAreaTrends(answerRows: AnswerMistakeRow[]): Map<string, MistakeTrendEntry[]> {
+  const countsByTopic = new Map<string, Map<string, number>>();
+  for (const row of answerRows) {
+    if (!row.mistake_tag || row.mistake_tag === "none") continue;
+    const counts = countsByTopic.get(row.topic_id) ?? new Map<string, number>();
+    counts.set(row.mistake_tag, (counts.get(row.mistake_tag) ?? 0) + 1);
+    countsByTopic.set(row.topic_id, counts);
+  }
+
+  const trendByTopic = new Map<string, MistakeTrendEntry[]>();
+  for (const [topicId, counts] of countsByTopic) {
+    const entries = [...counts.entries()]
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+      .slice(0, 2);
+    trendByTopic.set(topicId, entries);
+  }
+  return trendByTopic;
 }
 
 /**
@@ -20,16 +53,23 @@ export interface ProfileRow {
  * the first topic (by sort_order) starts unlocked — everything after it
  * stays locked until the topic before it is mastered.
  */
-export function computeTopics(topicRows: TopicRow[], profileRows: ProfileRow[]): Topic[] {
+export function computeTopics(
+  topicRows: TopicRow[],
+  profileRows: ProfileRow[],
+  answerRows: AnswerMistakeRow[] = []
+): Topic[] {
   const sorted = [...topicRows].sort(
     (a, b) => a.sort_order - b.sort_order || a.topic_id.localeCompare(b.topic_id)
   );
   const masteryByTopic = new Map(profileRows.map((p) => [p.topic_id, Number(p.mastery_percent)]));
+  const profileByTopic = new Map(profileRows.map((p) => [p.topic_id, p]));
+  const trendByTopic = computeWeakAreaTrends(answerRows);
 
   const topics: Topic[] = [];
   let previousMastered = true;
   for (const row of sorted) {
     const mastery = masteryByTopic.get(row.topic_id);
+    const profile = profileByTopic.get(row.topic_id);
     let state: TopicState;
     let progressPct: number;
 
@@ -47,7 +87,15 @@ export function computeTopics(topicRows: TopicRow[], profileRows: ProfileRow[]):
       progressPct = 0;
     }
 
-    topics.push({ id: row.topic_id, name: row.topic_name, state, progressPct });
+    topics.push({
+      id: row.topic_id,
+      name: row.topic_name,
+      state,
+      progressPct,
+      level: profile?.level ?? null,
+      weakArea: profile?.weak_area ?? null,
+      weakAreaTrend: trendByTopic.get(row.topic_id) ?? [],
+    });
     previousMastered = state === "mastered";
   }
   return topics;
@@ -160,9 +208,9 @@ export async function buildStudentProfile(studentId: string): Promise<StudentPro
 
   const topicIds = (topicRows ?? []).map((t) => t.topic_id);
 
-  const [{ data: profileRows }, { data: passedChecks }] = await Promise.all([
+  const [{ data: profileRows }, { data: passedChecks }, { data: answerRows }] = await Promise.all([
     topicIds.length
-      ? supabase.from("student_profiles").select("topic_id, mastery_percent").eq("student_id", studentId).in("topic_id", topicIds)
+      ? supabase.from("student_profiles").select("topic_id, mastery_percent, level, weak_area").eq("student_id", studentId).in("topic_id", topicIds)
       : Promise.resolve({ data: [] as ProfileRow[] }),
     topicIds.length
       ? supabase
@@ -172,6 +220,9 @@ export async function buildStudentProfile(studentId: string): Promise<StudentPro
           .eq("passed", true)
           .in("topic_id", topicIds)
       : Promise.resolve({ data: [] as { topic_id: string; checked_at: string }[] }),
+    topicIds.length
+      ? supabase.from("student_answers").select("topic_id, mistake_tag").eq("student_id", studentId).in("topic_id", topicIds)
+      : Promise.resolve({ data: [] as AnswerMistakeRow[] }),
   ]);
 
   const activeDateKeys = new Set((xpRows ?? []).map((x) => dateKeyUTC(new Date(x.created_at))));
@@ -181,6 +232,7 @@ export async function buildStudentProfile(studentId: string): Promise<StudentPro
     const courseTopics = (topicRows ?? []).filter((t) => t.course_id === course.course_id);
     const courseTopicIds = new Set(courseTopics.map((t) => t.topic_id));
     const courseProfiles = (profileRows ?? []).filter((p) => courseTopicIds.has(p.topic_id));
+    const courseAnswers = (answerRows ?? []).filter((a) => courseTopicIds.has(a.topic_id));
     const passDateKeysThisCourse = (passedChecks ?? [])
       .filter((c) => courseTopicIds.has(c.topic_id))
       .map((c) => dateKeyUTC(new Date(c.checked_at)));
@@ -190,7 +242,7 @@ export async function buildStudentProfile(studentId: string): Promise<StudentPro
       name: course.course_name,
       summary: course.summary ?? "",
       building: (course.building ?? "citadel") as Subject["building"],
-      topics: computeTopics(courseTopics, courseProfiles),
+      topics: computeTopics(courseTopics, courseProfiles, courseAnswers),
       weeklyCompletion: computeWeeklyCompletionDayIndex(passDateKeysThisCourse),
     };
   });
