@@ -8,8 +8,13 @@
   --line: #e9ddc8;
   --plum: #8b3a5e;
   --plum-deep: #6b2c48;
+  --plum-soft: rgba(139, 58, 94, 0.1);
   --flame: #ff6b4a;
   --flame-soft: #3a241f;
+  --amber: #b45309;
+  --amber-soft: rgba(180, 83, 9, 0.12);
+  --teal: #3d7a6f;
+  --teal-soft: rgba(61, 122, 111, 0.12);
 
   --radius-lg: 20px;
   --radius-sm: 12px;

@@ -84,6 +84,9 @@
 }
 
 .bubbleTag {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -94,6 +97,46 @@
 
 .bubbleRow.user .bubbleTag {
   color: rgba(255, 255, 255, 0.7);
+}
+
+/* Message-kind accents — a quiet left edge + tag color so a growing chat
+   scans at a glance: explanation vs. feedback vs. hint vs. retry vs. result.
+   Hint/retry get a faint tint too since they're the "pay attention" beats. */
+.kind_explanation {
+  border-left: 3px solid var(--plum);
+}
+.kind_explanation .bubbleTag {
+  color: var(--plum);
+}
+
+.kind_feedback {
+  border-left: 3px solid var(--ink-faint);
+}
+.kind_feedback .bubbleTag {
+  color: var(--ink-soft);
+}
+
+.kind_hint {
+  border-left: 3px solid var(--amber);
+  background: var(--amber-soft);
+}
+.kind_hint .bubbleTag {
+  color: var(--amber);
+}
+
+.kind_retry {
+  border-left: 3px solid var(--teal);
+  background: var(--teal-soft);
+}
+.kind_retry .bubbleTag {
+  color: var(--teal);
+}
+
+.kind_result {
+  border-left: 3px solid var(--plum-deep);
+}
+.kind_result .bubbleTag {
+  color: var(--plum-deep);
 }
 
 .bubble p + p {
