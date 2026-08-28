@@ -490,6 +490,7 @@ async def submit_diagnostic(req: DiagnosticSubmitReq):
 
 SESSION_TTL_HOURS = 4
 MASTERY_PASS_THRESHOLD = 70
+MAX_HINT_ATTEMPTS = 2
 
 
 def short_id(prefix: str, length: int = 15) -> str:
@@ -543,12 +544,8 @@ def score_value(value, field_name: str) -> Optional[float]:
     return max(0, min(100, float(value)))
 
 
-def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[str] = None) -> str:
-    if session_id:
-        existing = supabase.table("sessions").select("session_id").eq("session_id", session_id).eq("student_id", student_id).maybe_single().execute()
-        if existing.data:
-            return session_id
-
+def find_active_session(student_id: str, topic_id: str) -> Optional[str]:
+    """Most recent session for this student+topic, if it's still within the TTL."""
     latest = (
         supabase.table("sessions")
         .select("session_id, started_at")
@@ -558,18 +555,32 @@ def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[s
         .limit(1)
         .execute()
     )
-    if latest.data:
-        started_at = latest.data[0].get("started_at")
-        if started_at:
-            try:
-                started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-                if started.tzinfo is None:
-                    started = started.replace(tzinfo=timezone.utc)
-                age_hours = (datetime.now(timezone.utc) - started).total_seconds() / 3600
-                if age_hours < SESSION_TTL_HOURS:
-                    return latest.data[0]["session_id"]
-            except (TypeError, ValueError):
-                pass
+    if not latest.data:
+        return None
+    started_at = latest.data[0].get("started_at")
+    if not started_at:
+        return None
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(timezone.utc) - started).total_seconds() / 3600
+        if age_hours < SESSION_TTL_HOURS:
+            return latest.data[0]["session_id"]
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[str] = None) -> str:
+    if session_id:
+        existing = supabase.table("sessions").select("session_id").eq("session_id", session_id).eq("student_id", student_id).maybe_single().execute()
+        if existing.data:
+            return session_id
+
+    active = find_active_session(student_id, topic_id)
+    if active:
+        return active
 
     new_session_id = short_id("ses")
     supabase.table("sessions").insert({
@@ -580,12 +591,13 @@ def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[s
     return new_session_id
 
 
-def append_session_message(session_id: str, sender: str, text: str):
+def append_session_message(session_id: str, sender: str, text: str, metadata: Optional[dict] = None):
     supabase.table("session_messages").insert({
         "message_id": short_id("msg", 20),
         "session_id": session_id,
         "sender": sender,
         "message_text": text,
+        "metadata": metadata,
     }).execute()
 
 
@@ -605,6 +617,50 @@ def format_session_context(messages: List[dict]) -> str:
     if not messages:
         return "No prior conversation context."
     return "\n".join(f"{message.get('sender', 'unknown')}: {message.get('message_text', '')}" for message in messages)
+
+
+def count_session_hints(session_id: str) -> int:
+    messages = (
+        supabase.table("session_messages")
+        .select("metadata")
+        .eq("session_id", session_id)
+        .eq("sender", "ai")
+        .execute()
+    )
+    return sum(1 for m in (messages.data or []) if (m.get("metadata") or {}).get("tag") == "Hint")
+
+
+def generate_hint(chunks: List[dict], student_answer: str, feedback: str) -> Optional[str]:
+    """Best-effort: a Gemini/JSON failure here should fall through to the normal
+    reveal flow rather than fail a request whose score/feedback already succeeded."""
+    try:
+        prompt = f"""The student's explanation of the topic below fell short. Write ONE short leading
+question (1-2 sentences) that nudges them toward what they're missing, grounded only in the
+learning content below. Do NOT reveal the answer, the missing term, or the concept directly --
+ask a question that makes them work it out themselves.
+
+Return ONLY strict JSON: {{"hint": "..."}}
+
+Learning content:
+{chr(10).join(chunk["chunk_text"] for chunk in chunks)}
+
+Student's explanation:
+{student_answer}
+
+Why it fell short:
+{feedback}"""
+        response = gemini_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        hint_data = parse_gemini_json(response)
+        hint_text = hint_data.get("hint")
+        if isinstance(hint_text, str) and hint_text.strip():
+            return hint_text.strip()
+    except Exception as exc:
+        print("Hint Generation Error:", exc)
+    return None
 
 
 class MasteryCheckRequest(BaseModel):
@@ -647,8 +703,9 @@ async def check_mastery(req: MasteryCheckRequest):
 Use the learning content as the only source of truth. Judge correctness and completeness only against it.
 If an answer is not addressed by the source material, say so rather than inventing an external standard of correctness.
 Score only fields that were submitted; return null for the other score.
+explain_score and solve_score MUST be integers on a 0-100 scale, where 0 means completely wrong or missing and 100 means fully correct and complete. Never use a 0-1 scale.
 Return ONLY strict JSON with this exact shape:
-{{"explain_score": 0, "solve_score": null, "feedback": "1-2 sentences to the student", "mistake_tag": "concept_confusion|calculation_error|incomplete|off_topic|none"}}
+{{"explain_score": 0-100, "solve_score": 0-100, "feedback": "1-2 sentences to the student", "mistake_tag": "concept_confusion|calculation_error|incomplete|off_topic|none"}}
 
 Learning content:
 {chr(10).join(chunk["chunk_text"] for chunk in chunks_res.data)}
@@ -700,11 +757,13 @@ Student submissions:
             "overall_mastery": overall_mastery,
             "passed": passed,
         }).execute()
+        weak_area = mistake_tag if (not passed and mistake_tag != "none") else None
         supabase.table("student_profiles").upsert({
             "student_id": req.student_id,
             "topic_id": req.topic_id,
             "mastery_percent": overall_mastery,
             "level": level_for_mastery(overall_mastery),
+            "weak_area": weak_area,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
 
@@ -720,7 +779,29 @@ Student submissions:
         )
         if pending.data:
             supabase.table("retry_attempts").update({"result": "Passed" if passed else "Failed"}).eq("retry_id", pending.data[0]["retry_id"]).execute()
-        append_session_message(session_id, "ai", feedback)
+        # A retry-check submission (has `solution`) is always terminal on the frontend,
+        # win or lose -- only a first-pass failure (`explanation` only) leads into a retry.
+        is_retry_check = bool(solution)
+
+        hint_text = None
+        hints_used = None
+        if not passed and not is_retry_check:
+            prior_hints = count_session_hints(session_id)
+            if prior_hints < MAX_HINT_ATTEMPTS:
+                hint_text = generate_hint(chunks_res.data, explanation, feedback)
+                if hint_text:
+                    hints_used = prior_hints + 1
+
+        if hint_text:
+            append_session_message(session_id, "ai", f"{feedback}\n\n{hint_text}", metadata={
+                "tag": "Hint",
+                "hintsUsed": hints_used,
+                "maxHints": MAX_HINT_ATTEMPTS,
+            })
+        else:
+            feedback_tag = "Result" if (is_retry_check or passed) else "Feedback"
+            append_session_message(session_id, "ai", feedback, metadata={"tag": feedback_tag})
+
         return {
             "sessionId": session_id,
             "overallMastery": overall_mastery,
@@ -728,6 +809,9 @@ Student submissions:
             "feedback": feedback,
             "explainScore": explain_score,
             "solveScore": solve_score,
+            "hint": hint_text,
+            "hintsUsed": hints_used,
+            "maxHints": MAX_HINT_ATTEMPTS if hint_text else None,
         }
     except HTTPException:
         raise
@@ -853,7 +937,12 @@ Learning content:
             "format_used": format_used,
             "result": None,
         }).execute()
-        append_session_message(session_id, "ai", content)
+        append_session_message(session_id, "ai", content, metadata={
+            "tag": format_used,
+            "isDiagram": is_diagram_format,
+            "diagram": content if is_diagram_format else None,
+            "citations": citations,
+        })
         return {
             "sessionId": session_id,
             "format": format_used,
@@ -891,16 +980,49 @@ async def query_content(req: QueryRequest):
 
         if raw_answer == NO_CONTEXT_ANSWER or not chunks:
             append_session_message(session_id, "student", req.question)
-            append_session_message(session_id, "ai", raw_answer)
+            append_session_message(session_id, "ai", raw_answer, metadata={"tag": "Grounded Explanation", "citations": []})
             return {"sessionId": session_id, "answer": raw_answer, "citations": []}
 
         answer, citations = renumber_inline_citations(raw_answer, chunks)
 
         append_session_message(session_id, "student", req.question)
-        append_session_message(session_id, "ai", answer)
+        append_session_message(session_id, "ai", answer, metadata={"tag": "Grounded Explanation", "citations": citations})
         return {"sessionId": session_id, "answer": answer, "citations": citations}
     except HTTPException:
         raise
     except Exception as exc:
         print("Query Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to answer the question") from exc
+
+
+class SessionHistoryRequest(BaseModel):
+    student_id: str
+    topic_id: str
+
+
+@app.post("/session/history")
+async def session_history(req: SessionHistoryRequest):
+    try:
+        session_id = find_active_session(req.student_id, req.topic_id)
+        if not session_id:
+            return {"sessionId": None, "messages": []}
+
+        messages_res = (
+            supabase.table("session_messages")
+            .select("message_text, metadata, timestamp")
+            .eq("session_id", session_id)
+            .eq("sender", "ai")
+            .order("timestamp")
+            .execute()
+        )
+        messages = [
+            {
+                "text": row["message_text"],
+                **(row.get("metadata") or {}),
+            }
+            for row in (messages_res.data or [])
+        ]
+        return {"sessionId": session_id, "messages": messages}
+    except Exception as exc:
+        print("Session History Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to load session history") from exc
