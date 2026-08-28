@@ -14,6 +14,7 @@ from supabase import create_client, Client
 import PyPDF2
 from google import genai
 from google.genai import types
+from google.genai.errors import ClientError
 from answer_generation import generate_answer, AnswerGenerationError, NO_CONTEXT_ANSWER
 from citations import map_chunk, map_citations
 from retrieval import retrieve_context
@@ -128,6 +129,13 @@ def chunk_text(text: str, chunk_size: int = 600, overlap: int = 100) -> List[dic
 
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 768
+EMBEDDING_BATCH_SIZE = 50
+
+# Free-tier embedding quota is enforced per-minute (and per-day) — one 60s
+# backoff isn't always enough for the window to actually clear, so keep
+# retrying with the same backoff rather than giving up after one attempt.
+EMBEDDING_RATE_LIMIT_BACKOFF_SECONDS = 60
+EMBEDDING_MAX_RATE_LIMIT_RETRIES = 8
 
 
 def _normalize(vector: List[float]) -> List[float]:
@@ -138,6 +146,32 @@ def _normalize(vector: List[float]) -> List[float]:
     if norm == 0:
         return vector
     return [x / norm for x in vector]
+
+
+def _embed_batch(batch: List[str], task_type: str) -> List[List[float]]:
+    """Embeds one batch, retrying just this batch on a 429 — a later batch
+    failing must not force re-submitting earlier batches that already
+    succeeded (that was silently multiplying quota usage: a 3-batch document
+    failing on batch 3 used to retry all 3 batches, every retry)."""
+    for attempt in range(EMBEDDING_MAX_RATE_LIMIT_RETRIES + 1):
+        try:
+            response = gemini_client.models.embed_content(
+                model=EMBEDDING_MODEL,
+                contents=batch,
+                config=types.EmbedContentConfig(
+                    output_dimensionality=EMBEDDING_DIMENSIONS,
+                    task_type=task_type,
+                ),
+            )
+            return [_normalize(emb.values) for emb in response.embeddings]
+        except ClientError as e:
+            if e.code != 429 or attempt == EMBEDDING_MAX_RATE_LIMIT_RETRIES:
+                raise
+            print(
+                f"      embedding rate limited — waiting {EMBEDDING_RATE_LIMIT_BACKOFF_SECONDS}s "
+                f"before retrying this batch (attempt {attempt + 1}/{EMBEDDING_MAX_RATE_LIMIT_RETRIES})..."
+            )
+            time.sleep(EMBEDDING_RATE_LIMIT_BACKOFF_SECONDS)
 
 
 def generate_embeddings(texts: List[str], task_type: str = "RETRIEVAL_DOCUMENT") -> List[List[float]]:
@@ -152,19 +186,9 @@ def generate_embeddings(texts: List[str], task_type: str = "RETRIEVAL_DOCUMENT")
 
     # Gemini batchEmbedContents analog using Python SDK
     results = []
-    BATCH_SIZE = 50
-    for i in range(0, len(texts), BATCH_SIZE):
-        batch = texts[i:i + BATCH_SIZE]
-        response = gemini_client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=batch,
-            config=types.EmbedContentConfig(
-                output_dimensionality=EMBEDDING_DIMENSIONS,
-                task_type=task_type,
-            ),
-        )
-        for emb in response.embeddings:
-            results.append(_normalize(emb.values))
+    for i in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+        batch = texts[i:i + EMBEDDING_BATCH_SIZE]
+        results.extend(_embed_batch(batch, task_type))
 
     return results
 

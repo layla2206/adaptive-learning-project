@@ -21,28 +21,14 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from google.genai.errors import ClientError  # noqa: E402
 from main import supabase, s3_client, r2_bucket_name, parse_document, chunk_text, generate_embeddings  # noqa: E402
 
-# Free-tier Gemini embedding quota is 100 requests/minute, on a rolling
-# window — one 60s backoff isn't always enough (a doc needing 2-3 batches,
-# or one that lands right at the window boundary, can still be over quota
-# after a single retry). Keep retrying with the same backoff until the
-# window actually clears rather than giving up after one attempt.
+# generate_embeddings() already retries per-batch (with backoff) on a 429 —
+# see _embed_batch() in main.py. Retrying here too used to mean a failure on
+# a later batch re-submitted every earlier batch in the same document, on
+# every retry, silently multiplying quota usage well past what the document
+# actually needed. Only a small gap between documents is left here.
 THROTTLE_SECONDS = 2
-RATE_LIMIT_BACKOFF_SECONDS = 60
-MAX_RATE_LIMIT_RETRIES = 8
-
-
-def embed_with_backoff(texts):
-    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
-        try:
-            return generate_embeddings(texts)
-        except ClientError as e:
-            if e.code != 429 or attempt == MAX_RATE_LIMIT_RETRIES:
-                raise
-            print(f"      rate limited — waiting {RATE_LIMIT_BACKOFF_SECONDS}s before retrying (attempt {attempt + 1}/{MAX_RATE_LIMIT_RETRIES})...")
-            time.sleep(RATE_LIMIT_BACKOFF_SECONDS)
 
 
 def sanitize(name: str) -> str:
@@ -108,7 +94,7 @@ def main(dry_run: bool = False):
             continue
 
         texts = [c["text"] for c in chunks]
-        embeddings = embed_with_backoff(texts)
+        embeddings = generate_embeddings(texts)
         chunk_records = [
             {
                 "chunk_id": str(uuid.uuid4())[:15],
