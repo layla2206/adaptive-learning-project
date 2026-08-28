@@ -43,6 +43,7 @@ next-env.d.ts
 
 # Python
 venv/
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
