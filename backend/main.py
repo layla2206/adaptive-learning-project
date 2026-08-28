@@ -354,7 +354,9 @@ async def delete_document(req: DeleteRequest):
         supabase.table("documents").delete().eq("document_id", doc_id).execute()
         
         # 3. Delete from R2
-        if doc_res.data and doc_res.data.get("r2_key"):
+        # .maybe_single() returns None (not a response with data=None) when the
+        # document_id doesn't match any row -- guard both.
+        if doc_res and doc_res.data and doc_res.data.get("r2_key"):
             s3_client.delete_object(Bucket=r2_bucket_name, Key=doc_res.data["r2_key"])
         
         return {"success": True}
@@ -624,7 +626,10 @@ def find_active_session(student_id: str, topic_id: str) -> Optional[str]:
 def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[str] = None) -> str:
     if session_id:
         existing = supabase.table("sessions").select("session_id").eq("session_id", session_id).eq("student_id", student_id).maybe_single().execute()
-        if existing.data:
+        # .maybe_single() returns None (not a response with data=None) when the
+        # session_id doesn't match any row -- e.g. an expired/stale client-held
+        # id -- so this must be reachable without crashing, not just the common case.
+        if existing and existing.data:
             return session_id
 
     active = find_active_session(student_id, topic_id)
@@ -907,7 +912,21 @@ async def generate_retry(req: RetryGenerateRequest):
             .execute()
         )
         attempt_number = (retries.count or 0) + 1
-        format_used = RETRY_FORMATS[(attempt_number - 1) % len(RETRY_FORMATS)]
+        pref_res = (
+            supabase.table("students")
+            .select("preferred_explanation_format")
+            .eq("student_id", req.student_id)
+            .maybe_single()
+            .execute()
+        )
+        # .maybe_single() returns None (not a response with data=None) when zero
+        # rows match, in the installed supabase-py version -- guard both.
+        preferred_format = pref_res.data.get("preferred_explanation_format") if pref_res and pref_res.data else None
+        formats = RETRY_FORMATS
+        if preferred_format in RETRY_FORMATS:
+            idx = RETRY_FORMATS.index(preferred_format)
+            formats = RETRY_FORMATS[idx:] + RETRY_FORMATS[:idx]
+        format_used = formats[(attempt_number - 1) % len(formats)]
         is_diagram_format = format_used in RETRY_DIAGRAM_FORMATS
         chunks_res = (
             supabase.table("chunks")
@@ -1075,3 +1094,102 @@ async def session_history(req: SessionHistoryRequest):
     except Exception as exc:
         print("Session History Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to load session history") from exc
+
+
+class MistakeTagStat(BaseModel):
+    tag: str
+    label: str
+    count: int
+
+
+class InstructorInsightRequest(BaseModel):
+    instructor_id: str
+    topic_id: str
+    topic_name: str
+    stuck_count: int
+    mistake_breakdown: List[MistakeTagStat]
+
+
+@app.post("/instructor/insight/generate")
+async def generate_instructor_insight(req: InstructorInsightRequest):
+    if not req.mistake_breakdown:
+        raise HTTPException(status_code=422, detail="No mistake-tag data available for this topic yet")
+
+    stat_snapshot = [stat.model_dump() for stat in req.mistake_breakdown]
+
+    try:
+        existing = (
+            supabase.table("instructor_topic_suggestions")
+            .select("suggestion_text, stat_snapshot, generated_at")
+            .eq("topic_id", req.topic_id)
+            .maybe_single()
+            .execute()
+        )
+        # .maybe_single() returns None (not a response with data=None) when zero
+        # rows match, in the installed supabase-py version -- guard both.
+        if existing and existing.data and existing.data.get("stat_snapshot") == stat_snapshot:
+            # Nothing has changed since the cached suggestion was generated --
+            # serve it back rather than spending a Gemini call to re-derive
+            # the exact same phrasing.
+            return {
+                "topicId": req.topic_id,
+                "suggestionText": existing.data["suggestion_text"],
+                "generatedAt": existing.data["generated_at"],
+                "statSnapshot": stat_snapshot,
+            }
+
+        breakdown_lines = "\n".join(
+            f"- {stat.label}: {stat.count} of {req.stuck_count} stuck students"
+            for stat in req.mistake_breakdown
+        )
+        prompt = f"""You are helping a college instructor understand why students are stuck on one
+topic, based on real mistake-pattern data drawn from their explanations.
+
+Topic: {req.topic_name}
+Stuck students (2+ retry attempts, not yet mastered): {req.stuck_count}
+Most common mistake types among those students, most frequent first:
+{breakdown_lines}
+
+Write ONE short, concrete, actionable sentence (max 30 words) telling the instructor what to
+do about this before their next class session. Name the specific misunderstanding you infer
+from the topic and mistake type -- do not just restate the numbers. Do not hedge ("might",
+"could", "may want to") -- phrase it as a direct recommendation. Do not repeat the raw counts;
+the instructor already sees those separately.
+
+Return ONLY strict JSON: {{"suggestion": "..."}}"""
+
+        response = gemini_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        parsed = parse_gemini_json(response)
+        suggestion = parsed.get("suggestion")
+        if not isinstance(suggestion, str) or not suggestion.strip():
+            raise HTTPException(status_code=502, detail="AI returned an invalid suggestion")
+        suggestion = suggestion.strip()
+        generated_at = datetime.now(timezone.utc).isoformat()
+
+        supabase.table("instructor_topic_suggestions").upsert({
+            "topic_id": req.topic_id,
+            "suggestion_text": suggestion,
+            "stat_snapshot": stat_snapshot,
+            "generated_by": req.instructor_id,
+            "generated_at": generated_at,
+        }).execute()
+
+        return {
+            "topicId": req.topic_id,
+            "suggestionText": suggestion,
+            "generatedAt": generated_at,
+            "statSnapshot": stat_snapshot,
+        }
+    except HTTPException:
+        raise
+    except ClientError as exc:
+        if exc.code == 429:
+            raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
+        raise HTTPException(status_code=502, detail="AI request failed") from exc
+    except Exception as exc:
+        print("Instructor Insight Generation Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to generate teaching insight") from exc

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatEyebrowDate, initials, greetingForHour } from "@/lib/utils";
 import { getSession } from "@/lib/session";
 import type { Course, StuckTopic } from "@/lib/instructorData";
@@ -12,7 +12,7 @@ import StatsStrip, { StatsStripSkeleton, type Stat } from "@/components/StatsStr
 import StuckTable from "@/components/instructor/StuckTable";
 import CardSkeleton from "@/components/CardSkeleton";
 import Skeleton from "@/components/Skeleton";
-import { UploadIcon, UsersIcon, CheckIcon } from "@/components/icons";
+import { UploadIcon, UsersIcon } from "@/components/icons";
 import styles from "./page.module.css";
 
 interface InstructorDashboard {
@@ -26,9 +26,6 @@ export default function InstructorDashboardPage() {
   const now = useMemo(() => new Date(), []);
   const [dashboard, setDashboard] = useState<InstructorDashboard | null>(null);
   const [loading, setLoading] = useState(true);
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const TOAST_MS = 4000;
 
   useEffect(() => {
     async function load() {
@@ -49,10 +46,15 @@ export default function InstructorDashboardPage() {
   const courses = dashboard?.courses ?? [];
   const stuckTopicsByCourse = dashboard?.stuckTopicsByCourse ?? {};
 
-  function showToast(message: string) {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToast(message);
-    toastTimerRef.current = setTimeout(() => setToast(null), TOAST_MS);
+  function handleInsightGenerated(topicId: string, suggestion: { text: string; generatedAt: string }) {
+    setDashboard((prev) => {
+      if (!prev) return prev;
+      const next: Record<string, StuckTopic[]> = {};
+      for (const [courseId, topics] of Object.entries(prev.stuckTopicsByCourse)) {
+        next[courseId] = topics.map((t) => (t.topicId === topicId ? { ...t, suggestion } : t));
+      }
+      return { ...prev, stuckTopicsByCourse: next };
+    });
   }
 
   return (
@@ -97,7 +99,7 @@ export default function InstructorDashboardPage() {
           </div>
         </Card>
         <Card
-          onClick={() => showToast("Add Students interface coming soon!")}
+          href={courses.length === 1 ? `/instructor/courses/${courses[0].id}#add-students` : "#courses"}
           className={styles.actionCard}
         >
           <span className={styles.actionIcon}>
@@ -147,13 +149,12 @@ export default function InstructorDashboardPage() {
       <div id="insights" className={styles.sectionHead}>
         <h2>Where Students Are Stuck</h2>
       </div>
-      {courses.length > 0 && <StuckTable courses={courses} stuckTopicsByCourse={stuckTopicsByCourse} />}
-
-      {toast && (
-        <div className={styles.toast}>
-          <CheckIcon size={13} />
-          {toast}
-        </div>
+      {courses.length > 0 && (
+        <StuckTable
+          courses={courses}
+          stuckTopicsByCourse={stuckTopicsByCourse}
+          onInsightGenerated={handleInsightGenerated}
+        />
       )}
     </div>
   );

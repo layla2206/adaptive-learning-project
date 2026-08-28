@@ -103,3 +103,58 @@
   display: inline-flex;
   color: var(--ink-faint);
 }
+
+.insightRow td {
+  padding: 0 12px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.insightBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.insightEmpty {
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+}
+
+.suggestionText {
+  font-size: 0.88rem;
+  color: var(--ink);
+}
+
+.suggestionMeta {
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+}
+
+.insightButton {
+  align-self: flex-start;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.insightButton:hover:not(:disabled) {
+  border-color: var(--plum);
+  color: var(--plum);
+}
+
+.insightButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.insightError {
+  color: #d64545;
+  font-size: 0.78rem;
+}

@@ -85,6 +85,12 @@ export default function CourseUploadPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [fileMap, setFileMap] = useState<Map<string, File>>(new Map());
 
+  const [rosterStudentId, setRosterStudentId] = useState("");
+  const [rosterName, setRosterName] = useState("");
+  const [rosterEmail, setRosterEmail] = useState("");
+  const [rosterSubmitting, setRosterSubmitting] = useState(false);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -302,6 +308,44 @@ export default function CourseUploadPage() {
     }
   }
 
+  async function handleAddStudent() {
+    if (!rosterStudentId.trim() || !rosterName.trim() || !rosterEmail.trim() || rosterSubmitting) return;
+    setRosterSubmitting(true);
+    setRosterError(null);
+
+    const session = getSession();
+    if (!session) {
+      setRosterError("Your session expired — sign in again.");
+      setRosterSubmitting(false);
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/instructor/courses/${params.courseId}/roster`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          studentId: rosterStudentId.trim(),
+          name: rosterName.trim(),
+          email: rosterEmail.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setRosterError(data.error || "Something went wrong. Try again.");
+        return;
+      }
+      showToast(`${rosterName.trim()} pre-approved — they can sign up with ID ${rosterStudentId.trim()}.`);
+      setRosterStudentId("");
+      setRosterName("");
+      setRosterEmail("");
+    } catch {
+      setRosterError("Couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setRosterSubmitting(false);
+    }
+  }
+
   const inFlight = files.filter((f) => IN_FLIGHT.includes(f.status));
   const settled = files.filter((f) => !IN_FLIGHT.includes(f.status)).sort((a, b) => a.lectureNumber - b.lectureNumber);
   const orderedFiles = [...inFlight, ...settled];
@@ -463,6 +507,45 @@ export default function CourseUploadPage() {
       />
 
       <p className={styles.roster}>{course.rosterSize} students enrolled</p>
+
+      <div id="add-students" className={styles.sectionHead}>
+        <h2>Add a Student</h2>
+      </div>
+      <p className={styles.taggingHint}>
+        Pre-approves this student to sign up for {course.name} with their school ID. They won&apos;t appear in the
+        enrolled count above until they finish signing up.
+      </p>
+      <div className={styles.tagInline}>
+        <input
+          className={styles.rosterInput}
+          placeholder="Student ID (e.g. S10293)"
+          value={rosterStudentId}
+          onChange={(e) => setRosterStudentId(e.target.value)}
+        />
+        <input
+          className={styles.rosterInput}
+          placeholder="Full name"
+          value={rosterName}
+          onChange={(e) => setRosterName(e.target.value)}
+        />
+        <input
+          className={styles.rosterInput}
+          type="email"
+          placeholder="Email"
+          value={rosterEmail}
+          onChange={(e) => setRosterEmail(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleAddStudent()}
+        />
+        <button
+          type="button"
+          className={styles.saveButton}
+          onClick={handleAddStudent}
+          disabled={!rosterStudentId.trim() || !rosterName.trim() || !rosterEmail.trim() || rosterSubmitting}
+        >
+          {rosterSubmitting ? "Adding…" : "Add"}
+        </button>
+      </div>
+      {rosterError && <p className={styles.errorText}>{rosterError}</p>}
 
       <div className={styles.sectionHead}>
         <h2>Upload Lecture Content</h2>

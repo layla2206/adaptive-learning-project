@@ -19,27 +19,46 @@ export interface ProfileRow {
 export interface AnswerMistakeRow {
   topic_id: string;
   mistake_tag: string | null;
+  answered_at?: string | null;
 }
 
 /**
  * Recurring mistake types per topic across every graded attempt, most frequent
  * first — distinct from the single-snapshot `weak_area` on student_profiles,
  * which only ever reflects the latest check. "none"/null tags (a correct or
- * untagged attempt) never count as a weak area.
+ * untagged attempt) never count as a weak area. Selection/ranking is by
+ * all-time `count` (also used to pick which tags matter for the instructor
+ * insights feature); `recentCount`/`previousCount` additionally bucket by
+ * this-week-vs-last-week (UTC, Mon..Sun) for the student-facing trend label —
+ * both are 0 when a row has no `answered_at` (the instructor call site never
+ * supplies it, which is fine since it never reads these fields).
  */
-export function computeWeakAreaTrends(answerRows: AnswerMistakeRow[]): Map<string, MistakeTrendEntry[]> {
-  const countsByTopic = new Map<string, Map<string, number>>();
+export function computeWeakAreaTrends(
+  answerRows: AnswerMistakeRow[],
+  now: Date = new Date()
+): Map<string, MistakeTrendEntry[]> {
+  const thisWeekKeys = new Set(currentWeekDateKeysUTC(now));
+  const lastWeekKeys = new Set(currentWeekDateKeysUTC(now, 1));
+
+  const countsByTopic = new Map<string, Map<string, { count: number; recentCount: number; previousCount: number }>>();
   for (const row of answerRows) {
     if (!row.mistake_tag || row.mistake_tag === "none") continue;
-    const counts = countsByTopic.get(row.topic_id) ?? new Map<string, number>();
-    counts.set(row.mistake_tag, (counts.get(row.mistake_tag) ?? 0) + 1);
+    const counts = countsByTopic.get(row.topic_id) ?? new Map();
+    const entry = counts.get(row.mistake_tag) ?? { count: 0, recentCount: 0, previousCount: 0 };
+    entry.count += 1;
+    if (row.answered_at) {
+      const key = dateKeyUTC(new Date(row.answered_at));
+      if (thisWeekKeys.has(key)) entry.recentCount += 1;
+      else if (lastWeekKeys.has(key)) entry.previousCount += 1;
+    }
+    counts.set(row.mistake_tag, entry);
     countsByTopic.set(row.topic_id, counts);
   }
 
   const trendByTopic = new Map<string, MistakeTrendEntry[]>();
   for (const [topicId, counts] of countsByTopic) {
     const entries = [...counts.entries()]
-      .map(([tag, count]) => ({ tag, count }))
+      .map(([tag, v]) => ({ tag, ...v }))
       .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
       .slice(0, 2);
     trendByTopic.set(topicId, entries);
@@ -106,10 +125,11 @@ export function dateKeyUTC(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-/** Monday..Sunday date keys for the week containing `now`, in UTC. */
-export function currentWeekDateKeysUTC(now: Date = new Date()): string[] {
+/** Monday..Sunday date keys for the week containing `now`, in UTC.
+ *  weeksAgo=1 shifts the whole window back by one week (for "last week"). */
+export function currentWeekDateKeysUTC(now: Date = new Date(), weeksAgo = 0): string[] {
   const day = (now.getUTCDay() + 6) % 7; // Monday = 0 .. Sunday = 6
-  const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - day));
+  const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - day - weeksAgo * 7));
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(monday);
     d.setUTCDate(monday.getUTCDate() + i);
@@ -221,7 +241,7 @@ export async function buildStudentProfile(studentId: string): Promise<StudentPro
           .in("topic_id", topicIds)
       : Promise.resolve({ data: [] as { topic_id: string; checked_at: string }[] }),
     topicIds.length
-      ? supabase.from("student_answers").select("topic_id, mistake_tag").eq("student_id", studentId).in("topic_id", topicIds)
+      ? supabase.from("student_answers").select("topic_id, mistake_tag, answered_at").eq("student_id", studentId).in("topic_id", topicIds)
       : Promise.resolve({ data: [] as AnswerMistakeRow[] }),
   ]);
 

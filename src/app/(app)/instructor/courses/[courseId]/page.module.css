@@ -248,6 +248,22 @@
   cursor: not-allowed;
 }
 
+.rosterInput {
+  flex: 1 1 160px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-family: inherit;
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.rosterInput:focus {
+  border-color: var(--plum);
+}
+
 /* Failed */
 .rowFailed {
   background: rgba(217, 119, 6, 0.05);

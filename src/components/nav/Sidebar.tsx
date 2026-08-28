@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { HomeIcon, CalendarIcon, GridIcon, ChartIcon, UsersIcon, LogoutIcon } from "@/components/icons";
+import { HomeIcon, CalendarIcon, GridIcon, ChartIcon, UsersIcon, LogoutIcon, SettingsIcon } from "@/components/icons";
 import type { ComponentType } from "react";
 import { roleForPath } from "@/lib/roleForPath";
 import { clearSession } from "@/lib/session";
@@ -18,6 +18,7 @@ interface NavItem {
 const STUDENT_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: HomeIcon, active: (p) => p === "/dashboard" || p.startsWith("/subject") },
   { label: "Score", href: "/score", icon: CalendarIcon, active: (p) => p.startsWith("/score") },
+  { label: "Settings", href: "/settings", icon: SettingsIcon, active: (p) => p.startsWith("/settings") },
 ];
 
 const INSTRUCTOR_ITEMS: NavItem[] = [

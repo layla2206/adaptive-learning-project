@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 import { getCurrentUser } from "@/lib/authMiddleware";
-import type { StuckSeverity } from "@/lib/instructorData";
+import type { StuckSeverity, StuckTopic } from "@/lib/instructorData";
+import { computeStuckCohort, computeMistakeBreakdown } from "@/lib/instructorInsights";
 
 function severityFor(stuckCount: number): StuckSeverity {
   if (stuckCount >= 15) return "high";
@@ -60,14 +61,23 @@ export async function GET(req: NextRequest) {
   const topicIds = (topicRows ?? []).map((t) => t.topic_id);
   const allStudentIds = Array.from(new Set((enrollmentRows ?? []).map((e) => e.student_id)));
 
-  const [{ data: profileRows }, { data: retryRows }] = await Promise.all([
+  const [{ data: profileRows }, { data: retryRows }, { data: answerRows }, { data: suggestionRows }] = await Promise.all([
     topicIds.length
       ? supabase.from("student_profiles").select("student_id, topic_id, mastery_percent").in("topic_id", topicIds)
       : Promise.resolve({ data: [] as { student_id: string; topic_id: string; mastery_percent: number }[] }),
     topicIds.length
       ? supabase.from("retry_attempts").select("student_id, topic_id").in("topic_id", topicIds)
       : Promise.resolve({ data: [] as { student_id: string; topic_id: string }[] }),
+    topicIds.length
+      ? supabase.from("student_answers").select("student_id, topic_id, mistake_tag").in("topic_id", topicIds)
+      : Promise.resolve({ data: [] as { student_id: string; topic_id: string; mistake_tag: string | null }[] }),
+    topicIds.length
+      ? supabase.from("instructor_topic_suggestions").select("topic_id, suggestion_text, generated_at").in("topic_id", topicIds)
+      : Promise.resolve({ data: [] as { topic_id: string; suggestion_text: string; generated_at: string }[] }),
   ]);
+  const suggestionByTopic = new Map(
+    (suggestionRows ?? []).map((s) => [s.topic_id, { text: s.suggestion_text, generatedAt: s.generated_at }])
+  );
 
   const courses = (courseRows ?? []).map((course) => {
     const courseTopicIds = new Set((topicRows ?? []).filter((t) => t.course_id === course.course_id).map((t) => t.topic_id));
@@ -91,33 +101,24 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  const stuckTopicsByCourse: Record<string, { topic: string; stuckCount: number; severity: StuckSeverity; avgRetries: number }[]> = {};
+  const stuckTopicsByCourse: Record<string, StuckTopic[]> = {};
   for (const course of courseRows ?? []) {
     const courseTopics = (topicRows ?? []).filter((t) => t.course_id === course.course_id);
-    const rows: { topic: string; stuckCount: number; severity: StuckSeverity; avgRetries: number }[] = [];
+    const rows: StuckTopic[] = [];
 
     for (const topic of courseTopics) {
-      const attemptsByStudent = new Map<string, number>();
-      for (const r of retryRows ?? []) {
-        if (r.topic_id !== topic.topic_id) continue;
-        attemptsByStudent.set(r.student_id, (attemptsByStudent.get(r.student_id) ?? 0) + 1);
-      }
-      const masteredStudents = new Set(
-        (profileRows ?? [])
-          .filter((p) => p.topic_id === topic.topic_id && Number(p.mastery_percent) >= 100)
-          .map((p) => p.student_id)
-      );
-      const stuckCounts = Array.from(attemptsByStudent.entries()).filter(
-        ([studentId, count]) => count >= 2 && !masteredStudents.has(studentId)
-      );
-      if (stuckCounts.length === 0) continue;
+      const { stuckStudentIds, avgRetries } = computeStuckCohort(topic.topic_id, retryRows ?? [], profileRows ?? []);
+      if (stuckStudentIds.length === 0) continue;
 
-      const avgRetries = stuckCounts.reduce((sum, [, count]) => sum + count, 0) / stuckCounts.length;
+      const mistakeBreakdown = computeMistakeBreakdown(topic.topic_id, stuckStudentIds, answerRows ?? []);
       rows.push({
         topic: topic.topic_name,
-        stuckCount: stuckCounts.length,
-        severity: severityFor(stuckCounts.length),
-        avgRetries: Math.round(avgRetries * 10) / 10,
+        topicId: topic.topic_id,
+        stuckCount: stuckStudentIds.length,
+        severity: severityFor(stuckStudentIds.length),
+        avgRetries,
+        mistakeBreakdown,
+        suggestion: suggestionByTopic.get(topic.topic_id) ?? null,
       });
     }
     stuckTopicsByCourse[course.course_id] = rows.sort((a, b) => b.stuckCount - a.stuckCount);

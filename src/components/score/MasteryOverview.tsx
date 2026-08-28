@@ -1,13 +1,21 @@
-import type { Subject } from "@/lib/types";
+import type { MistakeTrendEntry, Subject } from "@/lib/types";
 import MasteryBar from "@/components/MasteryBar";
+import { MISTAKE_TAG_LABELS } from "@/lib/mistakeTags";
 import styles from "./MasteryOverview.module.css";
 
-const WEAK_AREA_LABELS: Record<string, string> = {
-  concept_confusion: "Concept confusion",
-  calculation_error: "Calculation errors",
-  incomplete: "Incomplete answers",
-  off_topic: "Off-topic answers",
-};
+function formatTrendEntry(e: MistakeTrendEntry): string {
+  const label = MISTAKE_TAG_LABELS[e.tag] ?? e.tag;
+  if (e.recentCount > 0 && e.previousCount > 0) {
+    return `${label}: ${e.recentCount} this week (${e.previousCount} last week)`;
+  }
+  if (e.recentCount > 0 && e.previousCount === 0) {
+    return `${label}: ${e.recentCount} this week (new)`;
+  }
+  if (e.recentCount === 0 && e.previousCount > 0) {
+    return `${label}: none this week — improving (was ${e.previousCount} last week)`;
+  }
+  return `${label} ×${e.count}`;
+}
 
 export default function MasteryOverview({ subjects }: { subjects: Subject[] }) {
   const totalTopics = subjects.reduce((sum, s) => sum + s.topics.length, 0);
@@ -58,16 +66,13 @@ export default function MasteryOverview({ subjects }: { subjects: Subject[] }) {
                           </span>
                           {t.weakArea && (
                             <span className={styles.weakBadge}>
-                              {WEAK_AREA_LABELS[t.weakArea] ?? t.weakArea}
+                              {MISTAKE_TAG_LABELS[t.weakArea] ?? t.weakArea}
                             </span>
                           )}
                         </div>
                         {t.weakAreaTrend.length > 0 && (
                           <p className={styles.trendCaption}>
-                            Recurring:{" "}
-                            {t.weakAreaTrend
-                              .map((e) => `${WEAK_AREA_LABELS[e.tag] ?? e.tag} ×${e.count}`)
-                              .join(" · ")}
+                            Recurring: {t.weakAreaTrend.map(formatTrendEntry).join(" · ")}
                           </p>
                         )}
                       </div>

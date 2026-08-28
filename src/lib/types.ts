@@ -2,7 +2,12 @@ export type TopicState = "locked" | "in-progress" | "mastered";
 
 export interface MistakeTrendEntry {
   tag: string;
+  /** All-time count — used for ranking/selecting which tags matter. */
   count: number;
+  /** Occurrences in the current UTC week (Mon..Sun). 0 when answered_at wasn't supplied. */
+  recentCount: number;
+  /** Occurrences in the prior UTC week. 0 when answered_at wasn't supplied. */
+  previousCount: number;
 }
 
 export interface Topic {

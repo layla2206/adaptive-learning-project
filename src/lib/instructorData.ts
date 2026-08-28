@@ -13,11 +13,27 @@ export interface Course {
 
 export type StuckSeverity = "high" | "mid" | "low";
 
+export interface MistakeBreakdownEntry {
+  tag: string;
+  label: string;
+  /** Distinct stuck students on record with this mistake tag — not a raw
+   * answer-row count, so "N of M stuck students" phrasing is literally true. */
+  count: number;
+}
+
+export interface TopicSuggestion {
+  text: string;
+  generatedAt: string;
+}
+
 export interface StuckTopic {
   topic: string;
+  topicId: string;
   stuckCount: number;
   severity: StuckSeverity;
   avgRetries: number;
+  mistakeBreakdown: MistakeBreakdownEntry[];
+  suggestion: TopicSuggestion | null;
 }
 
 // "uploading"/"failed" are transient, page-local states for a file mid-flight through

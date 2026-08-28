@@ -1,0 +1,84 @@
+.page {
+  padding: 48px 0 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sectionTitle {
+  font-size: 1.1rem;
+}
+
+.hint {
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+}
+
+.select,
+.textarea {
+  font-family: inherit;
+  font-size: 0.9rem;
+  color: var(--ink);
+  background: var(--bg-card-hover);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.select {
+  width: fit-content;
+  min-width: 220px;
+}
+
+.textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.saveRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.saveButton {
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--plum);
+  background: var(--plum);
+  color: #fff;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.72rem;
+  transition: opacity 0.2s ease;
+}
+
+.saveButton:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.saveButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.saved {
+  color: #2f9e5c;
+  font-size: 0.82rem;
+}
+
+.errorMsg {
+  color: #d64545;
+  font-size: 0.82rem;
+}
