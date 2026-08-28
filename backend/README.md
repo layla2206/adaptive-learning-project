@@ -28,7 +28,7 @@ We use a standard Python virtual environment.
    - `GEMINI_API_KEY="YOUR_PERSONAL_KEY_HERE"`
    - *Do not share keys!* The free tier has strict limits:
      - **Generation**: 20 requests per day (we use `gemini-3.6-flash`).
-     - **Embeddings**: 100 requests per minute (we use `gemini-embedding-001`).
+     - **Embeddings**: 100 requests per minute **and** 1,000 requests per day (we use `gemini-embedding-001`). The daily cap is the one that actually blocks work in practice — it's shared across the whole project, so a burst of testing early in the day can exhaust it long before you'd expect from the per-minute number alone.
    
    **RAG Configuration**:
    - `RAG_SIMILARITY_THRESHOLD`: Default is `0.7`. Controls how strict cosine similarity filtering is during document chunk retrieval.
