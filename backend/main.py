@@ -3,6 +3,7 @@ import re
 import uuid
 import time
 import math
+import threading
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -62,6 +63,91 @@ gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_
 if not gemini_api_key:
     raise ValueError("Missing Gemini API Key in environment.")
 gemini_client = genai.Client(api_key=gemini_api_key)
+
+# Test-only seam: when MOCK_GEMINI=1, every generate_content call below is
+# intercepted here and answered from a canned fixture instead of the real
+# API -- this project has exhausted its shared free-tier quota multiple
+# times already, so the E2E suite (tests/e2e/) must never call the real
+# Gemini API. Off by default; normal dev/deploy behavior is unchanged.
+#
+# Most call sites read response.text through parse_gemini_json() (below);
+# generate_answer() in answer_generation.py reads response.text directly as
+# plain prose instead (no JSON). Either way one object with a .text
+# attribute is enough, matched by a marker substring unique to each
+# endpoint's own prompt. Add one more (marker, fixture) pair here for each
+# new golden-path test that needs a real Gemini call mocked -- no other code
+# needs to change.
+#
+# NOTE: "explain_score" is NOT a usable marker on its own -- that JSON key
+# is in /mastery/check's schema instruction on every call regardless of
+# which field was actually submitted. The real signal is which submission
+# label appears in the prompt's "Student submissions:" section.
+MOCK_GEMINI = os.environ.get("MOCK_GEMINI") == "1"
+
+_MOCK_GEMINI_FIXTURES = [
+    # /foundations/generate's schema ALSO contains "correct_answer" (each of
+    # its 4 questions has that field, same as the diagnostic schema below) --
+    # matching is first-hit-wins over this whole list, so its marker must be
+    # checked before the generic '"correct_answer"' entry or it silently gets
+    # the diagnostic fixture's 2-item array instead of the 4 items
+    # /foundations/generate hard-requires (len(questions_data) != 4 -> 502).
+    # Same reasoning for quiz-mode /practice/generate just below it.
+    ("in this exact order:", '[{"question_text": "Mock foundations Q1?", "options": ["A", "B", "C", "D"], "correct_answer": "A"}, {"question_text": "Mock foundations Q2?", "options": ["A", "B", "C", "D"], "correct_answer": "B"}, {"question_text": "Mock foundations Q3?", "options": ["A", "B", "C", "D"], "correct_answer": "C"}, {"question_text": "Mock foundations Q4?", "options": ["A", "B", "C", "D"], "correct_answer": "D"}]'),
+    ("Write multiple-choice questions.", '[{"question_text": "Mock quiz Q1?", "options": ["A", "B", "C", "D"], "correct_answer": "A", "difficulty": "Medium"}, {"question_text": "Mock quiz Q2?", "options": ["A", "B", "C", "D"], "correct_answer": "B", "difficulty": "Medium"}, {"question_text": "Mock quiz Q3?", "options": ["A", "B", "C", "D"], "correct_answer": "C", "difficulty": "Medium"}, {"question_text": "Mock quiz Q4?", "options": ["A", "B", "C", "D"], "correct_answer": "D", "difficulty": "Medium"}, {"question_text": "Mock quiz Q5?", "options": ["A", "B", "C", "D"], "correct_answer": "A", "difficulty": "Medium"}]'),
+    ('"correct_answer"', '[{"question_text": "Mock diagnostic question 1?", "options": ["A", "B", "C", "D"], "correct_answer": "A", "difficulty": "Medium"}, {"question_text": "Mock diagnostic question 2?", "options": ["A", "B", "C", "D"], "correct_answer": "B", "difficulty": "Medium"}]'),
+    ("Write open-ended, worked-style problems", '[{"question_text": "Mock practice question 1?", "difficulty": "Medium", "model_answer": "Mock worked solution, step by step."}, {"question_text": "Mock practice question 2?", "difficulty": "Medium", "model_answer": "Mock worked solution, step by step."}]'),
+    ('got a basic question about "', '{"explanation": "Mock foundations explanation for testing."}'),
+    ("You are playing a fellow student", '{"reply": "Mock peer-buddy reply for testing."}'),
+    ('"suggestion":', '{"suggestion": "Mock teaching suggestion for testing."}'),
+    ('"citedChunkIds"', '{"content": "Mock retry content for automated testing.", "citedChunkIds": []}'),
+    ('"hint":', '{"hint": "Mock hint: think about what happens when two keys map to the same slot."}'),
+    ("Explain in your own words:", '{"explain_score": 40, "solve_score": null, "feedback": "Mock feedback: needs more detail.", "mistake_tag": "incomplete"}'),
+    ("Solve end-to-end:", '{"explain_score": null, "solve_score": 85, "feedback": "Mock feedback: well done.", "mistake_tag": "none"}'),
+    ("Answer the user's question using only the learning content below.", "Mock grounded explanation for automated testing, covering the topic's key mechanism."),
+]
+
+
+class _MockGeminiResponse:
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _MockGeminiEmbedding:
+    def __init__(self, values: list):
+        self.values = values
+
+
+class _MockEmbedContentResponse:
+    def __init__(self, embeddings: list):
+        self.embeddings = embeddings
+
+
+class _MockGeminiModels:
+    def generate_content(self, *, model, contents, config=None):
+        for marker, fixture in _MOCK_GEMINI_FIXTURES:
+            if marker in contents:
+                return _MockGeminiResponse(fixture)
+        raise RuntimeError(
+            f"MOCK_GEMINI: no fixture matches this prompt (add one to _MOCK_GEMINI_FIXTURES): {contents[:200]}"
+        )
+
+    def embed_content(self, *, model, contents, config=None):
+        # /upload's ingestion pipeline (generate_embeddings -> _embed_batch)
+        # is the one Gemini call site that doesn't go through
+        # parse_gemini_json()'s .text convention -- it reads
+        # response.embeddings[].values instead. One fixed-length fake vector
+        # per input string is enough: _normalize() just needs *some* nonzero
+        # 768-dim vector (768 == EMBEDDING_DIMENSIONS below) to run its real
+        # math unchanged, and no test asserts on the actual values.
+        return _MockEmbedContentResponse([_MockGeminiEmbedding([0.01] * 768) for _ in contents])
+
+
+class _MockGeminiClient:
+    models = _MockGeminiModels()
+
+
+if MOCK_GEMINI:
+    gemini_client = _MockGeminiClient()
 
 
 def generate_grounded_answer(question: str, chunks: List[dict]) -> str:
@@ -526,6 +612,12 @@ async def generate_diagnostic(req: DiagnosticGenerateReq):
             })
             
         return {"success": True, "questions": frontend_questions}
+    except HTTPException:
+        raise
+    except ClientError as exc:
+        if exc.code == 429:
+            raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
+        raise HTTPException(status_code=502, detail="AI request failed") from exc
     except Exception as e:
         print("Generate Diagnostic Error:", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -546,9 +638,13 @@ async def submit_diagnostic(req: DiagnosticSubmitReq):
 
         results_to_insert = []
         for ans in req.answers:
-            # Check answer
-            q_res = supabase.table("diagnostic_questions").select("*").eq("question_id", ans.question_id).single().execute()
-            if not q_res.data:
+            # Check answer. .single() raises (PGRST116) on zero rows instead
+            # of returning empty data, so a stale/unknown question_id would
+            # crash the whole submission with a 500 instead of just being
+            # skipped -- .maybe_single() returns None itself on no match, so
+            # both that and its .data must be guarded.
+            q_res = supabase.table("diagnostic_questions").select("*").eq("question_id", ans.question_id).maybe_single().execute()
+            if not q_res or not q_res.data:
                 continue
 
             q_data = q_res.data
@@ -676,6 +772,27 @@ def find_active_session(student_id: str, topic_id: str, session_type: str = "mas
     return None
 
 
+_session_creation_locks_guard = threading.Lock()
+_session_creation_locks: dict[tuple, threading.Lock] = {}
+
+
+def _session_creation_lock(student_id: str, topic_id: str, session_type: str) -> threading.Lock:
+    """One lock per (student, topic, session_type) triple -- serializes only
+    concurrent get_or_create_session calls that would actually race each
+    other (e.g. a double-click, a retried network request, two open tabs),
+    without blocking unrelated students/topics. In-process only, same
+    single-process-deployment tradeoff as rateLimit.ts's in-memory limiter --
+    doesn't share state across multiple uvicorn workers, which this project
+    doesn't run."""
+    key = (student_id, topic_id, session_type)
+    with _session_creation_locks_guard:
+        lock = _session_creation_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _session_creation_locks[key] = lock
+        return lock
+
+
 def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[str] = None, session_type: str = "mastery_loop") -> str:
     if session_id:
         existing = (
@@ -695,18 +812,25 @@ def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[s
         if existing and existing.data:
             return session_id
 
-    active = find_active_session(student_id, topic_id, session_type)
-    if active:
-        return active
+    # find_active_session + insert is a check-then-act -- without this lock,
+    # two near-simultaneous calls for the same (student, topic, session_type)
+    # with no session_id (e.g. a double-click) can both see "no active
+    # session" and each insert their own row, splitting the conversation
+    # across two sessions. Confirmed as a real race (test_concurrency.py)
+    # before this lock existed, not just a theoretical one.
+    with _session_creation_lock(student_id, topic_id, session_type):
+        active = find_active_session(student_id, topic_id, session_type)
+        if active:
+            return active
 
-    new_session_id = short_id("ses")
-    supabase.table("sessions").insert({
-        "session_id": new_session_id,
-        "student_id": student_id,
-        "topic_id": topic_id,
-        "session_type": session_type,
-    }).execute()
-    return new_session_id
+        new_session_id = short_id("ses")
+        supabase.table("sessions").insert({
+            "session_id": new_session_id,
+            "student_id": student_id,
+            "topic_id": topic_id,
+            "session_type": session_type,
+        }).execute()
+        return new_session_id
 
 
 def append_session_message(session_id: str, sender: str, text: str, metadata: Optional[dict] = None):
@@ -933,6 +1057,10 @@ Student submissions:
         }
     except HTTPException:
         raise
+    except ClientError as exc:
+        if exc.code == 429:
+            raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
+        raise HTTPException(status_code=502, detail="AI request failed") from exc
     except Exception as exc:
         print("Mastery Check Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to evaluate mastery") from exc
@@ -1086,6 +1214,10 @@ Learning content:
         }
     except HTTPException:
         raise
+    except ClientError as exc:
+        if exc.code == 429:
+            raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
+        raise HTTPException(status_code=502, detail="AI request failed") from exc
     except Exception as exc:
         print("Retry Generation Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to generate retry content") from exc
@@ -1215,6 +1347,10 @@ Return ONLY a JSON array of exactly {len(FOUNDATIONS_CONCEPTS)} objects, in the 
         return {"sessionId": session_id, "questions": frontend_questions}
     except HTTPException:
         raise
+    except ClientError as exc:
+        if exc.code == 429:
+            raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
+        raise HTTPException(status_code=502, detail="AI request failed") from exc
     except Exception as exc:
         print("Foundations Generate Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to generate foundations questions") from exc
@@ -1313,6 +1449,10 @@ Return ONLY strict JSON: {{"explanation": "..."}}"""
         return {"correct": False, "explanation": explanation}
     except HTTPException:
         raise
+    except ClientError as exc:
+        if exc.code == 429:
+            raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
+        raise HTTPException(status_code=502, detail="AI request failed") from exc
     except Exception as exc:
         print("Foundations Answer Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to check foundations answer") from exc
@@ -1467,6 +1607,10 @@ Lecture content the new questions must actually test:
         return {"cached": False, "questions": questions, "generatedAt": generated_at}
     except HTTPException:
         raise
+    except ClientError as exc:
+        if exc.code == 429:
+            raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
+        raise HTTPException(status_code=502, detail="AI request failed") from exc
     except Exception as exc:
         print("Practice Generate Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to generate practice content") from exc
@@ -1540,6 +1684,10 @@ Conversation so far:
         return {"sessionId": session_id, "reply": reply.strip(), "capped": prior_turns + 1 >= MAX_PEER_BUDDY_TURNS}
     except HTTPException:
         raise
+    except ClientError as exc:
+        if exc.code == 429:
+            raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
+        raise HTTPException(status_code=502, detail="AI request failed") from exc
     except Exception as exc:
         print("Peer Buddy Message Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to get a reply") from exc
@@ -1595,6 +1743,14 @@ async def query_content(req: QueryRequest):
         try:
             raw_answer = generate_answer(req.question, chunks, gemini_client)
         except AnswerGenerationError as exc:
+            # generate_answer() (answer_generation.py) catches every exception
+            # from its own Gemini call -- including a 429 -- and re-wraps it
+            # as a generic AnswerGenerationError, same as every other endpoint
+            # used to do before this session's quota-handling fix. The
+            # original ClientError survives as __cause__, so unwrap it here
+            # rather than always answering 502.
+            if isinstance(exc.__cause__, ClientError) and exc.__cause__.code == 429:
+                raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
         if raw_answer == NO_CONTEXT_ANSWER or not chunks:

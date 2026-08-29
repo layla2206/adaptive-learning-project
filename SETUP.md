@@ -80,3 +80,11 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 The Next.js frontend is now successfully proxying requests to your FastAPI backend! You can test this by navigating to the Instructor Dashboard (`/instructor/courses/cs201`) and uploading a file. 
 
 You can also view the auto-generated Swagger API documentation for the Python backend by visiting [http://localhost:8000/docs](http://localhost:8000/docs).
+
+---
+
+## ✅ Running the test suite
+
+There's a full automated test suite (backend, frontend, and end-to-end) — see [`docs/running-the-test-suite.md`](docs/running-the-test-suite.md) for setup and commands, and [`docs/testing-and-evaluation.md`](docs/testing-and-evaluation.md) for what's covered and why.
+
+Note: the tests read config from `.env`, not `.env.local` (unlike the "Environment Configuration" step above) — keep both in sync, or just use `.env` for everything.

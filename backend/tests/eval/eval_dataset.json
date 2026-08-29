@@ -1,0 +1,13 @@
+{
+  "answerable": [
+    { "topic_id": "top-hash1", "topic_name": "Hash Tables", "question": "What is a hash table and how does it handle collisions?" },
+    { "topic_id": "top-stack1", "topic_name": "Stacks", "question": "What operations does a stack support, and what does LIFO mean?" },
+    { "topic_id": "top-queue1", "topic_name": "Queues", "question": "How is a queue different from a stack in terms of ordering?" },
+    { "topic_id": "top-tree1", "topic_name": "Introduction to Trees", "question": "What makes a binary tree different from a general tree?" },
+    { "topic_id": "top-sort1", "topic_name": "Sorting Algorithms", "question": "How does merge sort divide and combine the data it sorts?" }
+  ],
+  "unanswerable": [
+    { "topic_id": "top-hash1", "topic_name": "Hash Tables", "question": "What is the capital of France?" },
+    { "topic_id": "top-stack1", "topic_name": "Stacks", "question": "How do I bake a chocolate cake from scratch?" }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "summary": {
+    "generated_at": "2026-08-29T11:19:47.566715+00:00",
+    "retrieval_hit_rate": 1.0,
+    "avg_top1_similarity": 0.688,
+    "citation_validity_rate": 1.0,
+    "total_citations": 4,
+    "valid_citations": 4,
+    "fallback_accuracy": 1.0,
+    "latency_p50_s": 4.3,
+    "latency_max_s": 7.959,
+    "mastery_check_score_spread": 0,
+    "grounded_answer_rate": 0.4,
+    "hard_fallback_rate": 0.5
+  },
+  "answerable": [
+    {
+      "topic_id": "top-hash1",
+      "topic_name": "Hash Tables",
+      "question": "What is a hash table and how does it handle collisions?",
+      "answer": "A hash table maps keys to values using a hash function that converts a key into an array index [4d5b6eda-0153-4]. \n\nWhen two different keys hash or map to the same index, a collision occurs [4d5b6eda-0153-4, 6810e066-0ef2-4]. Hash tables handle collisions using strategies such as:\n- Separate chaining (or chained hash tables), where each bucket holds a linked list of entries [4d5b6eda-0153-4, 6810e066-0ef2-4].\n- Open addressing, where the table probes for the next available slot [4d5b6eda-0153-4].\n- Linear probing, where if an initial location i is taken, the table checks location i + 1, i + 2, and so on until an open spot is found [6810e066-0ef2-4, 5c164caa-afcb-4].\n- Quadratic probing and rehashing [6810e066-0ef2-4].",
+      "retrieved_count": 5,
+      "above_threshold_count": 5,
+      "top1_similarity": 0.74270924159018,
+      "retrieval_hit": true,
+      "citation_count": 3,
+      "valid_citation_count": 3,
+      "retrieval_latency_s": 1.609,
+      "generation_latency_s": 6.351,
+      "total_latency_s": 7.959,
+      "declined_to_answer": false,
+      "grounded_answer": true
+    },
+    {
+      "topic_id": "top-stack1",
+      "topic_name": "Stacks",
+      "question": "What operations does a stack support, and what does LIFO mean?",
+      "answer": "I do not have enough context to answer.",
+      "retrieved_count": 5,
+      "above_threshold_count": 5,
+      "top1_similarity": 0.679558992385864,
+      "retrieval_hit": true,
+      "citation_count": 0,
+      "valid_citation_count": 0,
+      "retrieval_latency_s": 1.022,
+      "generation_latency_s": 3.278,
+      "total_latency_s": 4.3,
+      "declined_to_answer": true,
+      "grounded_answer": false
+    },
+    {
+      "topic_id": "top-queue1",
+      "topic_name": "Queues",
+      "question": "How is a queue different from a stack in terms of ordering?",
+      "answer": "I do not have enough context to answer.",
+      "retrieved_count": 5,
+      "above_threshold_count": 5,
+      "top1_similarity": 0.713981568813324,
+      "retrieval_hit": true,
+      "citation_count": 0,
+      "valid_citation_count": 0,
+      "retrieval_latency_s": 0.715,
+      "generation_latency_s": 4.287,
+      "total_latency_s": 5.002,
+      "declined_to_answer": true,
+      "grounded_answer": false
+    },
+    {
+      "topic_id": "top-tree1",
+      "topic_name": "Introduction to Trees",
+      "question": "What makes a binary tree different from a general tree?",
+      "answer": "In a binary tree, all nodes have at most two children (i.e., the arity or fan-out is 2), where the first child is referred to as the left child and the second child is referred to as the right child [78e481b0-d2d5-4].",
+      "retrieved_count": 5,
+      "above_threshold_count": 5,
+      "top1_similarity": 0.699318745752613,
+      "retrieval_hit": true,
+      "citation_count": 1,
+      "valid_citation_count": 1,
+      "retrieval_latency_s": 0.525,
+      "generation_latency_s": 2.874,
+      "total_latency_s": 3.399,
+      "declined_to_answer": false,
+      "grounded_answer": true
+    },
+    {
+      "topic_id": "top-sort1",
+      "topic_name": "Sorting Algorithms",
+      "question": "How does merge sort divide and combine the data it sorts?",
+      "answer": "I do not have enough context to answer.",
+      "retrieved_count": 5,
+      "above_threshold_count": 5,
+      "top1_similarity": 0.606091976165771,
+      "retrieval_hit": true,
+      "citation_count": 0,
+      "valid_citation_count": 0,
+      "retrieval_latency_s": 0.611,
+      "generation_latency_s": 2.855,
+      "total_latency_s": 3.466,
+      "declined_to_answer": true,
+      "grounded_answer": false
+    }
+  ],
+  "unanswerable": [
+    {
+      "topic_id": "top-hash1",
+      "question": "What is the capital of France?",
+      "answer": "I do not have enough context to answer.",
+      "correctly_declined": true,
+      "total_latency_s": 2.264,
+      "hard_fallback": false
+    },
+    {
+      "topic_id": "top-stack1",
+      "question": "How do I bake a chocolate cake from scratch?",
+      "answer": "I don't have enough context to answer that question.",
+      "correctly_declined": true,
+      "total_latency_s": 0.615,
+      "hard_fallback": true
+    }
+  ],
+  "mastery_consistency": {
+    "scores": [
+      100,
+      100
+    ],
+    "spread": 0
+  }
+}

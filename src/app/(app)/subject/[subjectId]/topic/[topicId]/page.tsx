@@ -11,26 +11,17 @@ import Confetti from "@/components/Confetti";
 import MermaidDiagram from "@/components/MermaidDiagram";
 import TutorMarkdown from "@/components/TutorMarkdown";
 import { ArrowIcon, BookIcon, CheckIcon, InfoIcon, LightbulbIcon, RefreshIcon } from "@/components/icons";
+import {
+  nextId,
+  mapHistoryRowsToMessages,
+  restoreFromHistory,
+  RETRY_TAGS,
+  type Stage,
+  type Message,
+  type Citation,
+  type FoundationsQuestion,
+} from "@/lib/sessionHistory";
 import styles from "./page.module.css";
-
-type Stage =
-  | "mastered-hub"
-  | "reviewing"
-  | "diagnose"
-  | "diagnose-summary"
-  | "foundations-question"
-  | "foundations-checking"
-  | "foundations-explain"
-  | "foundations-complete"
-  | "thinking-explain"
-  | "explain-shown"
-  | "check-ask"
-  | "checking"
-  | "thinking-retry-explain"
-  | "retry-shown"
-  | "retry-check-ask"
-  | "retry-checking"
-  | "done";
 
 // Sorting Algorithms is the only topic with no real preceding topic, so
 // instead of the normal prerequisite-chunk diagnostic it gets a dedicated
@@ -38,32 +29,8 @@ type Stage =
 // see backend/main.py's FOUNDATIONS_GATE_TOPIC_ID for the backend half.
 const FOUNDATIONS_GATE_TOPIC_ID = "top-sort1";
 
-interface Citation {
-  mark: string;
-  source: string;
-  excerpt: string;
-}
-
-interface Message {
-  id: string;
-  role: "tutor" | "user";
-  tag?: string;
-  paragraphs: string[];
-  citations?: Citation[];
-  diagram?: string;
-}
-
 interface DiagnosticQuestion {
   question_id: string;
-  text: string;
-  options: string[];
-}
-
-interface FoundationsQuestion {
-  question_id: string;
-  concept_id: string;
-  concept_label: string;
-  concept_index: number;
   text: string;
   options: string[];
 }
@@ -82,14 +49,6 @@ function summarizeDiagnosticScore(score: string): { headline: string; sub: strin
   if (pct > 0) return { headline: "Starting with some familiarity.", sub: "We'll ground the parts you've half-seen before and build from there." };
   return { headline: "Starting fresh — exactly what this step is for.", sub: "No assumptions — the explanation will build the idea from the ground up." };
 }
-
-let msgId = 0;
-function nextId() {
-  msgId += 1;
-  return `m${msgId}`;
-}
-
-const RETRY_TAGS = new Set(["Worked Example", "Hands-on Task", "Analogy", "Diagram", "Mind Map"]);
 
 type MessageKind = "explanation" | "feedback" | "hint" | "retry" | "result";
 
@@ -112,118 +71,6 @@ function messageKind(tag?: string): MessageKind | null {
   if (tag === "Result") return "result";
   if (RETRY_TAGS.has(tag)) return "retry";
   return null;
-}
-
-interface HistoryRow {
-  text: string;
-  tag?: string;
-  citations?: Citation[];
-  diagram?: string | null;
-  isDiagram?: boolean;
-  hintsUsed?: number;
-  maxHints?: number;
-  questionId?: string;
-  conceptId?: string;
-  conceptLabel?: string;
-  conceptIndex?: number;
-  totalConcepts?: number;
-  questionText?: string;
-  options?: string[];
-}
-
-/** Converts persisted session_messages rows into chat bubbles -- shared by
- * restoreFromHistory (mastery-loop resume) and the Mastered Hub's read-only
- * "Review the explanation" view, so there's one mapping to keep in sync. */
-function mapHistoryRowsToMessages(rows: HistoryRow[]): Message[] {
-  return rows.map((row) => ({
-    id: nextId(),
-    role: "tutor",
-    tag: row.tag === "Hint" ? `Hint ${row.hintsUsed}/${row.maxHints}` : row.tag,
-    paragraphs: row.isDiagram
-      ? row.citations?.length
-        ? [`Sources: ${row.citations.map((c) => `${c.mark} ${c.source}`).join(" · ")}`]
-        : []
-      : [row.text],
-    citations: row.isDiagram ? undefined : row.citations,
-    diagram: row.isDiagram ? row.text : undefined,
-  }));
-}
-
-/**
- * Rebuilds the chat + resumable stage from persisted session_messages.
- * Only "Grounded Explanation", a retry-format tag, "Hint", or a foundations-
- * gate tag as the LAST message is a stage we know how to resume into (waiting
- * on "Continue" or another submission); anything else (no history, or a
- * session that already reached "Result") falls back to a fresh diagnose so
- * we're never left resuming into an inconsistent stage.
- */
-function restoreFromHistory(rows: HistoryRow[]): {
-  messages: Message[];
-  stage: Stage;
-  foundationsCurrent?: FoundationsQuestion;
-  foundationsExplanation?: string;
-  foundationsPendingIndex?: number;
-  foundationsTotal?: number;
-} | null {
-  if (rows.length === 0) return null;
-  const lastRow = rows[rows.length - 1];
-  const lastTag = lastRow?.tag;
-  const lastIsRetry = RETRY_TAGS.has(lastTag ?? "");
-  const lastIsHint = lastTag === "Hint";
-  const lastIsFoundationsQuestion = lastTag === "Foundations Question";
-  const lastIsFoundationsExplanation = lastTag === "Foundations Explanation";
-  const lastIsFoundationsComplete = lastTag === "Foundations Complete";
-  if (
-    lastTag !== "Grounded Explanation" &&
-    !lastIsRetry &&
-    !lastIsHint &&
-    !lastIsFoundationsQuestion &&
-    !lastIsFoundationsExplanation &&
-    !lastIsFoundationsComplete
-  ) {
-    return null;
-  }
-
-  const messages: Message[] = mapHistoryRowsToMessages(rows);
-
-  const stage: Stage = lastIsRetry
-    ? "retry-shown"
-    : lastIsHint
-      ? "check-ask"
-      : lastIsFoundationsQuestion
-        ? "foundations-question"
-        : lastIsFoundationsExplanation
-          ? "foundations-explain"
-          : lastIsFoundationsComplete
-            ? "foundations-complete"
-            : "explain-shown";
-
-  const foundationsCurrent: FoundationsQuestion | undefined =
-    lastIsFoundationsQuestion &&
-    lastRow.questionId &&
-    lastRow.conceptId &&
-    lastRow.conceptLabel !== undefined &&
-    lastRow.conceptIndex !== undefined &&
-    lastRow.questionText &&
-    lastRow.options
-      ? {
-          question_id: lastRow.questionId,
-          concept_id: lastRow.conceptId,
-          concept_label: lastRow.conceptLabel,
-          concept_index: lastRow.conceptIndex,
-          text: lastRow.questionText,
-          options: lastRow.options,
-        }
-      : undefined;
-
-  return {
-    messages,
-    stage,
-    foundationsCurrent,
-    foundationsExplanation: lastIsFoundationsExplanation ? lastRow.text : undefined,
-    foundationsPendingIndex: lastIsFoundationsExplanation ? lastRow.conceptIndex : undefined,
-    foundationsTotal: lastRow.totalConcepts,
-  };
 }
 
 function ThinkingIndicator({ label }: { label: string }) {
