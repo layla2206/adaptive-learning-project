@@ -14,8 +14,14 @@ import { ArrowIcon, BookIcon, CheckIcon, InfoIcon, LightbulbIcon, RefreshIcon } 
 import styles from "./page.module.css";
 
 type Stage =
+  | "mastered-hub"
+  | "reviewing"
   | "diagnose"
   | "diagnose-summary"
+  | "foundations-question"
+  | "foundations-checking"
+  | "foundations-explain"
+  | "foundations-complete"
   | "thinking-explain"
   | "explain-shown"
   | "check-ask"
@@ -25,6 +31,12 @@ type Stage =
   | "retry-check-ask"
   | "retry-checking"
   | "done";
+
+// Sorting Algorithms is the only topic with no real preceding topic, so
+// instead of the normal prerequisite-chunk diagnostic it gets a dedicated
+// foundations gate (variables/arrays/comparing/swapping) before Explain --
+// see backend/main.py's FOUNDATIONS_GATE_TOPIC_ID for the backend half.
+const FOUNDATIONS_GATE_TOPIC_ID = "top-sort1";
 
 interface Citation {
   mark: string;
@@ -41,10 +53,17 @@ interface Message {
   diagram?: string;
 }
 
-const BASE_STEPS = ["Diagnose", "Explain", "Check"];
-
 interface DiagnosticQuestion {
   question_id: string;
+  text: string;
+  options: string[];
+}
+
+interface FoundationsQuestion {
+  question_id: string;
+  concept_id: string;
+  concept_label: string;
+  concept_index: number;
   text: string;
   options: string[];
 }
@@ -103,25 +122,20 @@ interface HistoryRow {
   isDiagram?: boolean;
   hintsUsed?: number;
   maxHints?: number;
+  questionId?: string;
+  conceptId?: string;
+  conceptLabel?: string;
+  conceptIndex?: number;
+  totalConcepts?: number;
+  questionText?: string;
+  options?: string[];
 }
 
-/**
- * Rebuilds the chat + resumable stage from persisted session_messages.
- * Only "Grounded Explanation", a retry-format tag, or "Hint" as the LAST message
- * is a stage we know how to resume into (waiting on "Continue" or another
- * submission); anything else (no history, or a session that already reached
- * "Result") falls back to a fresh diagnose so we're never left resuming into an
- * inconsistent stage.
- */
-function restoreFromHistory(rows: HistoryRow[]): { messages: Message[]; stage: Stage; hasRetried: boolean } | null {
-  if (rows.length === 0) return null;
-  const lastRow = rows[rows.length - 1];
-  const lastTag = lastRow?.tag;
-  const lastIsRetry = RETRY_TAGS.has(lastTag ?? "");
-  const lastIsHint = lastTag === "Hint";
-  if (lastTag !== "Grounded Explanation" && !lastIsRetry && !lastIsHint) return null;
-
-  const messages: Message[] = rows.map((row) => ({
+/** Converts persisted session_messages rows into chat bubbles -- shared by
+ * restoreFromHistory (mastery-loop resume) and the Mastered Hub's read-only
+ * "Review the explanation" view, so there's one mapping to keep in sync. */
+function mapHistoryRowsToMessages(rows: HistoryRow[]): Message[] {
+  return rows.map((row) => ({
     id: nextId(),
     role: "tutor",
     tag: row.tag === "Hint" ? `Hint ${row.hintsUsed}/${row.maxHints}` : row.tag,
@@ -133,11 +147,82 @@ function restoreFromHistory(rows: HistoryRow[]): { messages: Message[]; stage: S
     citations: row.isDiagram ? undefined : row.citations,
     diagram: row.isDiagram ? row.text : undefined,
   }));
+}
+
+/**
+ * Rebuilds the chat + resumable stage from persisted session_messages.
+ * Only "Grounded Explanation", a retry-format tag, "Hint", or a foundations-
+ * gate tag as the LAST message is a stage we know how to resume into (waiting
+ * on "Continue" or another submission); anything else (no history, or a
+ * session that already reached "Result") falls back to a fresh diagnose so
+ * we're never left resuming into an inconsistent stage.
+ */
+function restoreFromHistory(rows: HistoryRow[]): {
+  messages: Message[];
+  stage: Stage;
+  foundationsCurrent?: FoundationsQuestion;
+  foundationsExplanation?: string;
+  foundationsPendingIndex?: number;
+  foundationsTotal?: number;
+} | null {
+  if (rows.length === 0) return null;
+  const lastRow = rows[rows.length - 1];
+  const lastTag = lastRow?.tag;
+  const lastIsRetry = RETRY_TAGS.has(lastTag ?? "");
+  const lastIsHint = lastTag === "Hint";
+  const lastIsFoundationsQuestion = lastTag === "Foundations Question";
+  const lastIsFoundationsExplanation = lastTag === "Foundations Explanation";
+  const lastIsFoundationsComplete = lastTag === "Foundations Complete";
+  if (
+    lastTag !== "Grounded Explanation" &&
+    !lastIsRetry &&
+    !lastIsHint &&
+    !lastIsFoundationsQuestion &&
+    !lastIsFoundationsExplanation &&
+    !lastIsFoundationsComplete
+  ) {
+    return null;
+  }
+
+  const messages: Message[] = mapHistoryRowsToMessages(rows);
+
+  const stage: Stage = lastIsRetry
+    ? "retry-shown"
+    : lastIsHint
+      ? "check-ask"
+      : lastIsFoundationsQuestion
+        ? "foundations-question"
+        : lastIsFoundationsExplanation
+          ? "foundations-explain"
+          : lastIsFoundationsComplete
+            ? "foundations-complete"
+            : "explain-shown";
+
+  const foundationsCurrent: FoundationsQuestion | undefined =
+    lastIsFoundationsQuestion &&
+    lastRow.questionId &&
+    lastRow.conceptId &&
+    lastRow.conceptLabel !== undefined &&
+    lastRow.conceptIndex !== undefined &&
+    lastRow.questionText &&
+    lastRow.options
+      ? {
+          question_id: lastRow.questionId,
+          concept_id: lastRow.conceptId,
+          concept_label: lastRow.conceptLabel,
+          concept_index: lastRow.conceptIndex,
+          text: lastRow.questionText,
+          options: lastRow.options,
+        }
+      : undefined;
 
   return {
     messages,
-    stage: lastIsRetry ? "retry-shown" : lastIsHint ? "check-ask" : "explain-shown",
-    hasRetried: rows.some((row) => RETRY_TAGS.has(row.tag ?? "")),
+    stage,
+    foundationsCurrent,
+    foundationsExplanation: lastIsFoundationsExplanation ? lastRow.text : undefined,
+    foundationsPendingIndex: lastIsFoundationsExplanation ? lastRow.conceptIndex : undefined,
+    foundationsTotal: lastRow.totalConcepts,
   };
 }
 
@@ -168,17 +253,51 @@ export default function TopicPage() {
   const [diagIdx, setDiagIdx] = useState(0);
   const [diagAnswers, setDiagAnswers] = useState<{ question_id: string; student_answer: string }[]>([]);
   const [diagScore, setDiagScore] = useState<string | null>(null);
-  const [hasRetried, setHasRetried] = useState(false);
+  const [foundationsCurrent, setFoundationsCurrent] = useState<FoundationsQuestion | null>(null);
+  const [foundationsExplanation, setFoundationsExplanation] = useState<string | null>(null);
+  const [foundationsPendingIndex, setFoundationsPendingIndex] = useState<number | null>(null);
+  const [foundationsTotal, setFoundationsTotal] = useState(0);
   const [input, setInput] = useState("");
   const [stepAnswers, setStepAnswers] = useState(["", "", ""]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [expandedCitations, setExpandedCitations] = useState<Set<string>>(new Set());
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [practiceAvailability, setPracticeAvailability] = useState<{ practiceAssignment: boolean; quiz: boolean } | null>(null);
 
   useEffect(() => {
     if (!topic) return;
     const topicId = topic.id;
     let cancelled = false;
+
+    // Reopening an already-mastered topic must never re-fire the diagnostic/
+    // foundations generator -- that used to happen silently on every visit
+    // (the mastery loop's last message is tagged "Result", which
+    // restoreFromHistory correctly treats as terminal/non-resumable, so the
+    // old code always fell through to a fresh, quota-spending generate call).
+    // A mastered topic goes straight to its hub instead; no session/history
+    // fetch needed here at all -- "Review the explanation" loads that lazily,
+    // on demand, only if the student actually asks for it.
+    if (topic.state === "mastered") {
+      queueMicrotask(async () => {
+        if (cancelled) return;
+        setStage("mastered-hub");
+        setDiagLoading(false);
+        const session = getSession();
+        if (!session) return;
+        try {
+          const response = await fetch(`/api/practice/availability?topicId=${topicId}`, {
+            headers: { Authorization: `Bearer ${session.token}` },
+          });
+          const data = response.ok ? await response.json() : null;
+          if (!cancelled && data) setPracticeAvailability(data);
+        } catch {
+          /* buttons just stay hidden if this fails -- not critical */
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
 
     async function loadQuestions(session: { token: string }) {
       try {
@@ -192,6 +311,28 @@ export default function TopicPage() {
         if (!cancelled) setDiagQuestions(data.questions ?? []);
       } catch {
         if (!cancelled) setDiagError("Couldn't load the diagnostic questions for this topic — try refreshing.");
+      } finally {
+        if (!cancelled) setDiagLoading(false);
+      }
+    }
+
+    async function loadFoundations(session: { token: string }) {
+      try {
+        const response = await fetch("/api/foundations/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+          body: JSON.stringify({ topic_id: topicId }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) throw new Error(data.error || "Something went wrong");
+        if (!cancelled) {
+          setSessionId(data.sessionId ?? null);
+          setFoundationsCurrent(data.questions?.[0] ?? null);
+          setFoundationsTotal(data.questions?.length ?? 0);
+          setStage("foundations-question");
+        }
+      } catch {
+        if (!cancelled) setDiagError("Couldn't load the foundations check for this topic — try refreshing.");
       } finally {
         if (!cancelled) setDiagLoading(false);
       }
@@ -220,8 +361,11 @@ export default function TopicPage() {
           if (restored) {
             setSessionId(historyData.sessionId);
             setMessages(restored.messages);
-            setHasRetried(restored.hasRetried);
             setStage(restored.stage);
+            setFoundationsCurrent(restored.foundationsCurrent ?? null);
+            setFoundationsExplanation(restored.foundationsExplanation ?? null);
+            setFoundationsPendingIndex(restored.foundationsPendingIndex ?? null);
+            setFoundationsTotal(restored.foundationsTotal ?? 0);
             setDiagLoading(false);
             return;
           }
@@ -230,7 +374,9 @@ export default function TopicPage() {
         // Couldn't check for a resumable session — fall through to a fresh diagnostic.
       }
 
-      if (!cancelled) loadQuestions(session);
+      if (cancelled) return;
+      if (topicId === FOUNDATIONS_GATE_TOPIC_ID) loadFoundations(session);
+      else loadQuestions(session);
     }
 
     resumeOrStart();
@@ -265,6 +411,27 @@ export default function TopicPage() {
       else next.add(key);
       return next;
     });
+  }
+
+  async function handleReviewExplanation() {
+    if (!topic) return;
+    setStage("reviewing");
+    const session = getSession();
+    if (!session) return;
+    try {
+      const response = await fetch(`/api/session/history?topicId=${topic.id}`, {
+        headers: { Authorization: `Bearer ${session.token}` },
+      });
+      const data = await response.json();
+      if (response.ok) setMessages(mapHistoryRowsToMessages(data.messages ?? []));
+    } catch {
+      // Leave whatever's already rendered -- this is read-only, best-effort.
+    }
+  }
+
+  function handleBackToHub() {
+    setMessages([]);
+    setStage("mastered-hub");
   }
 
   function handleDiagnoseSelect(option: string) {
@@ -304,7 +471,6 @@ export default function TopicPage() {
 
   async function handleDiagnoseSummaryContinue() {
     if (!topic || !subject) return;
-    setTopicProgress(subject.id, topic.id, 30);
     setStage("thinking-explain");
 
     const session = getSession();
@@ -342,6 +508,88 @@ export default function TopicPage() {
       });
     } finally {
       setStage("explain-shown");
+    }
+  }
+
+  async function handleFoundationsSelect(option: string) {
+    if (!foundationsCurrent || !sessionId || !topic) return;
+    const question = foundationsCurrent;
+    setStage("foundations-checking");
+
+    const session = getSession();
+    if (!session) {
+      setDiagError("You'll need to be signed in — try refreshing.");
+      setStage("foundations-question");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/foundations/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          topicId: topic.id,
+          sessionId,
+          questionId: question.question_id,
+          conceptIndex: question.concept_index,
+          studentAnswer: option,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Something went wrong");
+
+      if (data.correct) {
+        if (data.done) {
+          setFoundationsCurrent(null);
+          setStage("foundations-complete");
+        } else {
+          setFoundationsCurrent(data.next);
+          setStage("foundations-question");
+        }
+        return;
+      }
+
+      setFoundationsExplanation(data.explanation);
+      setFoundationsPendingIndex(question.concept_index);
+      setStage("foundations-explain");
+    } catch {
+      setDiagError("Something went wrong checking that — try again in a moment.");
+      setStage("foundations-question");
+    }
+  }
+
+  async function handleFoundationsContinue() {
+    if (foundationsPendingIndex === null || !sessionId || !topic) return;
+    setStage("foundations-checking");
+
+    const session = getSession();
+    if (!session) {
+      setDiagError("You'll need to be signed in — try refreshing.");
+      setStage("foundations-explain");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/foundations/advance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ topicId: topic.id, sessionId, conceptIndex: foundationsPendingIndex }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Something went wrong");
+
+      setFoundationsExplanation(null);
+      setFoundationsPendingIndex(null);
+      if (data.done) {
+        setFoundationsCurrent(null);
+        setStage("foundations-complete");
+      } else {
+        setFoundationsCurrent(data.next);
+        setStage("foundations-question");
+      }
+    } catch {
+      setDiagError("Something went wrong — try again in a moment.");
+      setStage("foundations-explain");
     }
   }
 
@@ -400,7 +648,6 @@ export default function TopicPage() {
         return;
       }
 
-      setHasRetried(true);
       setTopicProgress(subject.id, topic.id, 70);
       pushMessage({ role: "tutor", tag: "Feedback", paragraphs: [checkData.feedback] });
       setStage("thinking-retry-explain");
@@ -497,22 +744,6 @@ export default function TopicPage() {
     }
   }
 
-  const steps = hasRetried ? [...BASE_STEPS, "Retry"] : BASE_STEPS;
-  const stepIndex =
-    stage === "diagnose" || stage === "diagnose-summary"
-      ? 0
-      : stage === "thinking-explain" || stage === "explain-shown"
-        ? 1
-        : stage === "check-ask" || stage === "checking"
-          ? 2
-          : stage === "thinking-retry-explain" ||
-              stage === "retry-shown" ||
-              stage === "retry-check-ask" ||
-              stage === "retry-checking"
-            ? 3
-            : steps.length;
-
-
   const diagSummary = summarizeDiagnosticScore(diagScore ?? "0/0");
 
   function handleSkipDiagnose() {
@@ -531,24 +762,20 @@ export default function TopicPage() {
         titleExtra={<span className={styles.subjectChip}>{subject.name}</span>}
       />
 
-      <div className={styles.stepper}>
-        {steps.map((label, i) => (
-          <div key={label} className={styles.step}>
-            <div
-              className={`${styles.stepBar} ${
-                i < stepIndex ? styles.done : i === stepIndex && stage !== "done" ? styles.current : ""
-              }`}
-            />
-            <span className={`${styles.stepLabel} ${i <= stepIndex && stage !== "done" ? styles.active : ""}`}>
-              {label}
-            </span>
-          </div>
-        ))}
+      <div className={styles.progressWrap}>
+        <span className={styles.progressLabel}>Lecture progress</span>
+        <div className={styles.progressTrack}>
+          <div className={styles.progressFill} style={{ width: `${topic.progressPct}%` }} />
+        </div>
       </div>
 
       {stage === "diagnose" && (
         <div className={styles.diagnoseCard}>
-          {diagLoading && <p className={styles.diagnoseTag}>Preparing your diagnostic…</p>}
+          {diagLoading && (
+            <p className={styles.diagnoseTag}>
+              {topic.id === FOUNDATIONS_GATE_TOPIC_ID ? "Preparing your foundations check…" : "Preparing your diagnostic…"}
+            </p>
+          )}
 
           {!diagLoading && diagError && (
             <>
@@ -583,7 +810,7 @@ export default function TopicPage() {
                 ))}
               </div>
               <p className={styles.diagnoseTag}>
-                Diagnostic {diagIdx + 1} / {diagQuestions.length}
+                Warm-up {diagIdx + 1} / {diagQuestions.length}
               </p>
               <h2 className={styles.diagnosePrompt}>{diagQuestions[diagIdx].text}</h2>
               <div className={styles.diagnoseOptions}>
@@ -605,9 +832,59 @@ export default function TopicPage() {
 
       {stage === "diagnose-summary" && (
         <div className={styles.diagnoseCard}>
-          <p className={styles.diagnoseTag}>Starting Point{diagScore ? ` · ${diagScore} correct` : ""}</p>
+          <p className={styles.diagnoseTag}>Starting Point</p>
           <h2 className={styles.diagnosePrompt}>{diagSummary.headline}</h2>
           <p className={styles.summaryHint}>{diagSummary.sub}</p>
+          <div className={styles.continueRow}>
+            <button type="button" className={styles.continueButton} onClick={handleDiagnoseSummaryContinue}>
+              Continue
+              <ArrowIcon size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {stage === "foundations-question" && foundationsCurrent && (
+        <div className={styles.diagnoseCard}>
+          <div className={styles.diagnoseDots}>
+            {Array.from({ length: foundationsTotal }).map((_, i) => (
+              <span
+                key={i}
+                className={`${styles.diagnoseDot} ${i <= foundationsCurrent.concept_index ? styles.diagnoseDotActive : ""}`}
+              />
+            ))}
+          </div>
+          <p className={styles.diagnoseTag}>
+            Concept {foundationsCurrent.concept_index + 1} / {foundationsTotal} — {foundationsCurrent.concept_label}
+          </p>
+          <h2 className={styles.diagnosePrompt}>{foundationsCurrent.text}</h2>
+          <div className={styles.diagnoseOptions}>
+            {foundationsCurrent.options.map((opt) => (
+              <button key={opt} type="button" className={styles.diagnoseOption} onClick={() => handleFoundationsSelect(opt)}>
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {stage === "foundations-explain" && foundationsExplanation && (
+        <div className={styles.diagnoseCard}>
+          <p className={styles.diagnoseTag}>Not quite — here&apos;s the idea</p>
+          <h2 className={styles.diagnosePrompt}>{foundationsExplanation}</h2>
+          <div className={styles.continueRow}>
+            <button type="button" className={styles.continueButton} onClick={handleFoundationsContinue}>
+              Continue
+              <ArrowIcon size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {stage === "foundations-complete" && (
+        <div className={styles.diagnoseCard}>
+          <p className={styles.diagnoseTag}>Foundations cleared</p>
+          <h2 className={styles.diagnosePrompt}>You&apos;ve got the basics — let&apos;s get into {topic.name}.</h2>
           <div className={styles.continueRow}>
             <button type="button" className={styles.continueButton} onClick={handleDiagnoseSummaryContinue}>
               Continue
@@ -663,7 +940,9 @@ export default function TopicPage() {
         {(stage === "thinking-explain" || stage === "thinking-retry-explain") && (
           <ThinkingIndicator label="Grounding an explanation…" />
         )}
-        {(stage === "checking" || stage === "retry-checking") && <ThinkingIndicator label="Checking…" />}
+        {(stage === "checking" || stage === "retry-checking" || stage === "foundations-checking") && (
+          <ThinkingIndicator label="Checking…" />
+        )}
       </div>
 
       {stage === "explain-shown" && (
@@ -767,6 +1046,51 @@ export default function TopicPage() {
               <ArrowIcon size={14} />
             </Link>
           </div>
+        </div>
+      )}
+
+      {stage === "mastered-hub" && (
+        <div className={styles.diagnoseCard}>
+          <p className={styles.diagnoseTag}>Mastered</p>
+          <h2 className={styles.diagnosePrompt}>{topic.name} — what would you like to do?</h2>
+          <div className={styles.continueRow} style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+            <button type="button" className={styles.continueButton} onClick={handleReviewExplanation}>
+              Review the explanation
+              <ArrowIcon size={14} />
+            </button>
+            {practiceAvailability?.practiceAssignment && (
+              <Link
+                href={`/subject/${subject.id}/topic/${topic.id}/practice?type=practice_assignment`}
+                className={styles.continueButton}
+              >
+                Practice this lecture
+                <ArrowIcon size={14} />
+              </Link>
+            )}
+            {practiceAvailability?.quiz && (
+              <Link href={`/subject/${subject.id}/topic/${topic.id}/practice?type=quiz`} className={styles.continueButton}>
+                Take a quiz
+                <ArrowIcon size={14} />
+              </Link>
+            )}
+            <Link href={`/subject/${subject.id}/topic/${topic.id}/peer-buddy`} className={styles.continueButton}>
+              Explain it to a friend
+              <ArrowIcon size={14} />
+            </Link>
+            <Link href={`/subject/${subject.id}`} className={styles.continueButton}>
+              Back to {subject.name}
+              <ArrowIcon size={14} />
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {stage === "reviewing" && (
+        <div className={styles.continueRow}>
+          <button type="button" className={styles.continueButton} onClick={handleBackToHub}>
+            Back
+            <ArrowIcon size={14} />
+          </button>
         </div>
       )}
     </div>

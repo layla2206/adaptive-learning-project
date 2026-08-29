@@ -41,11 +41,14 @@ export interface StuckTopic {
 // can be in (tagging = no lecture_number assigned yet).
 export type FileStatus = "uploading" | "tagging" | "processing" | "ready" | "failed";
 
+export type DocumentType = "practice_assignment" | "quiz";
+
 export interface UploadedFile {
   id: string;
   name: string;
   lectureNumber: number;
   topicId?: string | null;
+  documentType?: DocumentType | null;
   uploadedAt: string;
   status: FileStatus;
   progress?: number;

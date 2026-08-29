@@ -34,7 +34,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ cour
 
   const { data: documents, error } = await supabase
     .from("documents")
-    .select("document_id, file_name, lecture_number, topic_id, upload_date")
+    .select("document_id, file_name, lecture_number, topic_id, document_type, upload_date")
     .eq("course_id", courseId)
     .order("upload_date", { ascending: true });
 
@@ -48,6 +48,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ cour
     name: d.file_name,
     lectureNumber: d.lecture_number ?? 0,
     topicId: d.topic_id,
+    documentType: d.document_type,
     uploadedAt: formatUploadDate(d.upload_date),
     status: d.lecture_number != null ? "ready" : "tagging",
   }));

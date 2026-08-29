@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getSession } from "@/lib/session";
-import type { CourseTopic, UploadedFile } from "@/lib/instructorData";
+import type { CourseTopic, DocumentType, UploadedFile } from "@/lib/instructorData";
 import AppHeader from "@/components/AppHeader";
 import { UploadIcon, CheckIcon, RefreshIcon } from "@/components/icons";
 import styles from "./page.module.css";
@@ -81,6 +81,7 @@ export default function CourseUploadPage() {
   const [retagId, setRetagId] = useState<string | null>(null);
   const [retagLecture, setRetagLecture] = useState("");
   const [retagTopicId, setRetagTopicId] = useState(NO_TOPIC);
+  const [retagDocumentType, setRetagDocumentType] = useState("");
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [fileMap, setFileMap] = useState<Map<string, File>>(new Map());
@@ -218,7 +219,10 @@ export default function CourseUploadPage() {
     uploadToR2(id, fileObj);
   }
 
-  async function patchDocument(documentId: string, updates: { lectureNumber?: number; topicId?: string | null }): Promise<boolean> {
+  async function patchDocument(
+    documentId: string,
+    updates: { lectureNumber?: number; topicId?: string | null; documentType?: string | null }
+  ): Promise<boolean> {
     const session = getSession();
     if (!session) return false;
     const res = await fetch(`/api/instructor/documents/${documentId}`, {
@@ -267,21 +271,24 @@ export default function CourseUploadPage() {
     setRetagId(file.id);
     setRetagLecture(String(file.lectureNumber));
     setRetagTopicId(file.topicId ?? NO_TOPIC);
+    setRetagDocumentType(file.documentType ?? "");
   }
 
   async function handleConfirmRetag() {
     if (!retagId || !retagLecture.trim()) return;
     const lectureNumber = Number(retagLecture);
     const topicId = retagTopicId || null;
-    const ok = await patchDocument(retagId, { lectureNumber, topicId });
+    const documentType = (retagDocumentType || null) as DocumentType | null;
+    const ok = await patchDocument(retagId, { lectureNumber, topicId, documentType });
     if (!ok) {
       showToast("Couldn't save that lecture — try again.");
       return;
     }
-    setFiles((prev) => prev.map((f) => (f.id === retagId ? { ...f, lectureNumber, topicId } : f)));
+    setFiles((prev) => prev.map((f) => (f.id === retagId ? { ...f, lectureNumber, topicId, documentType } : f)));
     setRetagId(null);
     setRetagLecture("");
     setRetagTopicId(NO_TOPIC);
+    setRetagDocumentType("");
   }
 
   async function handleRemove(id: string) {
@@ -448,6 +455,16 @@ export default function CourseUploadPage() {
                 topics={courseTopics}
                 onChange={setRetagTopicId}
               />
+              <select
+                id={`retag-type-${file.id}`}
+                className={styles.retagInput}
+                value={retagDocumentType}
+                onChange={(e) => setRetagDocumentType(e.target.value)}
+              >
+                <option value="">Type: none</option>
+                <option value="practice_assignment">Practice Assignment</option>
+                <option value="quiz">Quiz</option>
+              </select>
               <button type="button" className={styles.retagSave} onClick={handleConfirmRetag}>
                 Save
               </button>
@@ -459,6 +476,7 @@ export default function CourseUploadPage() {
             <p className={styles.rowMeta}>
               Lecture {file.lectureNumber} · {file.uploadedAt} ·{" "}
               {file.topicId ? (topicNameById.get(file.topicId) ?? "Unknown topic") : "Untagged"}
+              {file.documentType ? ` · ${file.documentType === "quiz" ? "Quiz" : "Practice Assignment"}` : ""}
             </p>
           )}
         </div>

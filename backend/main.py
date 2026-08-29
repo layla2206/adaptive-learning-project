@@ -15,7 +15,7 @@ import PyPDF2
 import httpx
 from google import genai
 from google.genai import types
-from google.genai.errors import ClientError
+from google.genai.errors import ClientError, ServerError
 from answer_generation import generate_answer, AnswerGenerationError, NO_CONTEXT_ANSWER
 from citations import map_chunk, map_citations
 from retrieval import retrieve_context
@@ -414,15 +414,72 @@ async def generate_diagnostic(req: DiagnosticGenerateReq):
     try:
         # Fetch some chunks for this topic (simple pseudo-random retrieval)
         chunks_res = supabase.table("chunks").select("chunk_text").eq("topic_id", req.topic_id).limit(5).execute()
-        
+
         if not chunks_res.data:
             return {"error": "No content found for this topic to generate questions."}
-            
+
         context_text = "\n\n".join([c["chunk_text"] for c in chunks_res.data])
-        
+
+        # Topics are strictly linear by sort_order (see computeTopics() in
+        # src/lib/studentProgress.ts -- a topic only unlocks once the one
+        # before it is mastered), so "the preceding topic" is unambiguous.
+        # Pulling a little of its content lets the quiz test whether the
+        # student has the foundation this topic assumes, not just recall of
+        # this topic's own slides in isolation.
+        prereq_chunks_text = None
+        topic_row = supabase.table("topics").select("course_id, sort_order").eq("topic_id", req.topic_id).maybe_single().execute()
+        if topic_row and topic_row.data:
+            prev_topic = (
+                supabase.table("topics")
+                .select("topic_id")
+                .eq("course_id", topic_row.data["course_id"])
+                .lt("sort_order", topic_row.data["sort_order"])
+                .order("sort_order", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if prev_topic.data:
+                prereq_res = (
+                    supabase.table("chunks")
+                    .select("chunk_text")
+                    .eq("topic_id", prev_topic.data[0]["topic_id"])
+                    .limit(3)
+                    .execute()
+                )
+                if prereq_res.data:
+                    prereq_chunks_text = "\n\n".join(c["chunk_text"] for c in prereq_res.data)
+
+        if prereq_chunks_text:
+            prereq_section = f"""
+        Prerequisite content (from the previous topic):
+        {prereq_chunks_text}
+        """
+            prereq_instruction = (
+                "At least one question must test whether the student can connect the "
+                "prerequisite content above to this topic, not just recall this topic in isolation."
+            )
+        else:
+            # First topic in the course (or its predecessor has no embedded
+            # content yet) has nothing to pull a prerequisite from -- still
+            # probe the basic programming fundamentals this topic assumes,
+            # using general knowledge instead of retrieved content.
+            prereq_section = ""
+            prereq_instruction = (
+                "At least one question must test basic foundational programming concepts "
+                "(such as variables and array indexing) that this topic assumes. This "
+                "question must be fully self-contained and must NOT reference, quote, or "
+                "assume the student has seen any specific algorithm, code snippet, or "
+                "'provided implementation' from the current topic content below -- invent "
+                "a plain, generic example instead (e.g. a small unrelated array), since the "
+                "student has not been taught this topic yet and will not see that content "
+                "alongside the question."
+            )
+
         # Call Gemini to generate 2 MCQ questions
         prompt = f"""
         Based on the following educational content, generate 2 multiple-choice diagnostic questions to test a student's understanding.
+        No question may reference, quote, or assume the student has seen any specific code snippet, diagram, or "the provided implementation" unless that exact code is fully reproduced within the question text itself -- the diagnostic UI only ever shows question text and options, never source content.
+        {prereq_instruction}
         Return ONLY a JSON array of objects with the exact following schema, nothing else (no markdown blocks, no intro):
         [
           {{
@@ -432,8 +489,8 @@ async def generate_diagnostic(req: DiagnosticGenerateReq):
             "difficulty": "Medium"
           }}
         ]
-        
-        Content:
+        {prereq_section}
+        Current topic content:
         {context_text}
         """
         
@@ -486,17 +543,15 @@ async def submit_diagnostic(req: DiagnosticSubmitReq):
     try:
         correct_count = 0
         total = len(req.answers)
-        topic_id = None
-        
+
         results_to_insert = []
         for ans in req.answers:
             # Check answer
             q_res = supabase.table("diagnostic_questions").select("*").eq("question_id", ans.question_id).single().execute()
             if not q_res.data:
                 continue
-                
+
             q_data = q_res.data
-            topic_id = q_data["topic_id"]
             is_correct = (ans.student_answer.strip().lower() == q_data["correct_answer"].strip().lower())
             
             if is_correct:
@@ -512,23 +567,16 @@ async def submit_diagnostic(req: DiagnosticSubmitReq):
             
         if results_to_insert:
             supabase.table("diagnostic_results").insert(results_to_insert).execute()
-            
-        # Update profile
-        if topic_id and total > 0:
-            score_pct = (correct_count / total) * 100
-            level = "Beginner"
-            if score_pct == 100:
-                level = "Advanced"
-            elif score_pct > 0:
-                level = "Intermediate"
-                
-            supabase.table("student_profiles").upsert({
-                "student_id": req.student_id,
-                "topic_id": topic_id,
-                "mastery_percent": score_pct,
-                "level": level
-            }).execute()
-            
+
+        # Deliberately no student_profiles write here -- this is the low-stakes
+        # warm-up, not real progress (see the topic page's "Starting Point"
+        # framing). It used to upsert mastery_percent/level straight from the
+        # raw score with no monotonicity guard, unlike every other
+        # progress-writing path in this file -- a bad warm-up score could
+        # silently erase real mastery a student had already earned via
+        # /mastery/check. The score is still returned below for the
+        # in-the-moment "Starting Point" summary; it just never gets persisted.
+
         return {"success": True, "score": f"{correct_count}/{total}"}
     except Exception as e:
         print("Submit Diagnostic Error:", e)
@@ -595,13 +643,18 @@ def score_value(value, field_name: str) -> Optional[float]:
     return max(0, min(100, float(value)))
 
 
-def find_active_session(student_id: str, topic_id: str) -> Optional[str]:
-    """Most recent session for this student+topic, if it's still within the TTL."""
+def find_active_session(student_id: str, topic_id: str, session_type: str = "mastery_loop") -> Optional[str]:
+    """Most recent session for this student+topic+type, if it's still within the TTL.
+    session_type defaults to the mastery loop's own kind so every pre-existing
+    caller (mastery/query/retry/foundations) keeps only ever seeing its own
+    sessions -- a peer-buddy chat passes session_type="peer_buddy" instead so
+    the two kinds can never collide for the same (student, topic)."""
     latest = (
         supabase.table("sessions")
         .select("session_id, started_at")
         .eq("student_id", student_id)
         .eq("topic_id", topic_id)
+        .eq("session_type", session_type)
         .order("started_at", desc=True)
         .limit(1)
         .execute()
@@ -623,16 +676,26 @@ def find_active_session(student_id: str, topic_id: str) -> Optional[str]:
     return None
 
 
-def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[str] = None) -> str:
+def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[str] = None, session_type: str = "mastery_loop") -> str:
     if session_id:
-        existing = supabase.table("sessions").select("session_id").eq("session_id", session_id).eq("student_id", student_id).maybe_single().execute()
+        existing = (
+            supabase.table("sessions")
+            .select("session_id")
+            .eq("session_id", session_id)
+            .eq("student_id", student_id)
+            .eq("session_type", session_type)
+            .maybe_single()
+            .execute()
+        )
         # .maybe_single() returns None (not a response with data=None) when the
         # session_id doesn't match any row -- e.g. an expired/stale client-held
-        # id -- so this must be reachable without crashing, not just the common case.
+        # id, or (now that sessions carry a type) a real session_id of the
+        # WRONG type for this call -- either way this must be reachable
+        # without crashing, not just the common case.
         if existing and existing.data:
             return session_id
 
-    active = find_active_session(student_id, topic_id)
+    active = find_active_session(student_id, topic_id, session_type)
     if active:
         return active
 
@@ -641,6 +704,7 @@ def get_or_create_session(student_id: str, topic_id: str, session_id: Optional[s
         "session_id": new_session_id,
         "student_id": student_id,
         "topic_id": topic_id,
+        "session_type": session_type,
     }).execute()
     return new_session_id
 
@@ -1025,6 +1089,493 @@ Learning content:
     except Exception as exc:
         print("Retry Generation Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to generate retry content") from exc
+
+
+# ==========================================
+# FOUNDATIONS GATE (top-sort1 only)
+# ==========================================
+# Sorting Algorithms is the only topic with no real preceding topic to pull a
+# prerequisite from (every other topic already gets a working prerequisite
+# question by pulling chunks from its real predecessor, inside
+# generate_diagnostic() above). Bubble/Selection/Insertion Sort are this
+# lecture's own content, not prerequisites for it -- the real prerequisites
+# are fundamentals the lecture assumes but never teaches. This is a small,
+# hardcoded, human-verified list (matching cs301_topic_taxonomy.sql's own
+# "verify against real content, don't invent" convention) rather than
+# something re-derived by an LLM call each time -- these are course-invariant
+# fundamentals, and quota is too scarce to spend deriving something static.
+#
+# No retry loop on a wrong answer (deliberate, quota-driven): one explanation,
+# then the student advances to the next concept regardless. A retry-until-
+# correct design was considered and rejected -- worst case for one student's
+# one pass would be 9-13 of the whole project's 20 daily generate_content
+# calls; this way it's at most 1 (batch) + 4 (one explanation per concept) = 5.
+
+FOUNDATIONS_SERVER_ERROR_BACKOFF_SECONDS = 2
+FOUNDATIONS_MAX_SERVER_ERROR_RETRIES = 2
+
+
+def _generate_content_with_retry(prompt: str):
+    """gemini-3.6-flash occasionally returns a transient 503 (model
+    overload) with nothing to do with our own quota -- observed clearing on
+    an immediate retry. A couple of short-backoff retries here is safe and
+    distinct from the embedding path's 429 handling above: a 429 IS our own
+    quota and must never be retried (see EMBEDDING_MAX_RATE_LIMIT_RETRIES's
+    comment), but a 503 ServerError is Gemini's own transient overload."""
+    attempt = 0
+    while True:
+        try:
+            return gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt,
+                config={"response_mime_type": "application/json"},
+            )
+        except ServerError:
+            if attempt == FOUNDATIONS_MAX_SERVER_ERROR_RETRIES:
+                raise
+            attempt += 1
+            time.sleep(FOUNDATIONS_SERVER_ERROR_BACKOFF_SECONDS)
+
+
+FOUNDATIONS_GATE_TOPIC_ID = "top-sort1"
+FOUNDATIONS_CONCEPTS = [
+    {"concept_id": "variables", "label": "Variables & Assignment"},
+    {"concept_id": "arrays", "label": "Arrays & Indexing"},
+    {"concept_id": "comparing", "label": "Comparing Two Values"},
+    {"concept_id": "swapping", "label": "Swapping Two Values"},
+]
+
+
+class FoundationsGenerateReq(BaseModel):
+    student_id: str
+    topic_id: str
+    session_id: Optional[str] = None
+
+
+@app.post("/foundations/generate")
+async def generate_foundations(req: FoundationsGenerateReq):
+    if req.topic_id != FOUNDATIONS_GATE_TOPIC_ID:
+        return {"error": "Foundations gate not configured for this topic."}
+
+    try:
+        session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
+
+        concept_list = "\n".join(f"{i + 1}. {c['label']}" for i, c in enumerate(FOUNDATIONS_CONCEPTS))
+        prompt = f"""Generate one multiple-choice question for each of the following {len(FOUNDATIONS_CONCEPTS)} basic programming concepts, in this exact order:
+{concept_list}
+
+Each question must be fully self-contained and generic -- do NOT reference any specific course, lecture, sorting algorithm, or "the provided implementation." Invent a plain, unrelated example for each (e.g. a small generic array or two arbitrary variables).
+Return ONLY a JSON array of exactly {len(FOUNDATIONS_CONCEPTS)} objects, in the same order as the list above, with this exact schema, nothing else (no markdown blocks, no intro):
+[
+  {{
+    "question_text": "The question here?",
+    "options": ["A", "B", "C", "D"],
+    "correct_answer": "A"
+  }}
+]"""
+
+        response = _generate_content_with_retry(prompt)
+        questions_data = json.loads(response.text)
+        if not isinstance(questions_data, list) or len(questions_data) != len(FOUNDATIONS_CONCEPTS):
+            raise HTTPException(status_code=502, detail="AI did not return the expected number of questions")
+
+        frontend_questions = []
+        for concept, q in zip(FOUNDATIONS_CONCEPTS, questions_data):
+            question_id = f"q-{str(uuid.uuid4())[:6]}"
+            supabase.table("diagnostic_questions").insert({
+                "question_id": question_id,
+                "topic_id": req.topic_id,
+                "session_id": session_id,
+                "concept_id": concept["concept_id"],
+                "question_text": json.dumps({"text": q["question_text"], "options": q["options"]}),
+                "correct_answer": q["correct_answer"],
+                "question_type": "FOUNDATIONS_MCQ",
+            }).execute()
+            frontend_questions.append({
+                "question_id": question_id,
+                "concept_id": concept["concept_id"],
+                "concept_label": concept["label"],
+                "concept_index": len(frontend_questions),
+                "text": q["question_text"],
+                "options": q["options"],
+            })
+
+        first = frontend_questions[0]
+        append_session_message(session_id, "ai", first["text"], metadata={
+            "tag": "Foundations Question",
+            "questionId": first["question_id"],
+            "conceptId": first["concept_id"],
+            "conceptLabel": first["concept_label"],
+            "conceptIndex": 0,
+            "totalConcepts": len(FOUNDATIONS_CONCEPTS),
+            "questionText": first["text"],
+            "options": first["options"],
+        })
+
+        return {"sessionId": session_id, "questions": frontend_questions}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("Foundations Generate Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to generate foundations questions") from exc
+
+
+def _foundations_next_payload(session_id: str, next_index: int) -> dict:
+    """Zero-Gemini-cost bookkeeping shared by /foundations/answer's correct
+    branch and /foundations/advance: reveal the next concept's already-
+    generated question, or signal completion."""
+    if next_index >= len(FOUNDATIONS_CONCEPTS):
+        append_session_message(session_id, "ai", "Foundations cleared.", metadata={
+            "tag": "Foundations Complete",
+            "clearedConcepts": len(FOUNDATIONS_CONCEPTS),
+        })
+        return {"correct": True, "done": True}
+
+    concept = FOUNDATIONS_CONCEPTS[next_index]
+    q_res = (
+        supabase.table("diagnostic_questions")
+        .select("question_id, question_text")
+        .eq("session_id", session_id)
+        .eq("concept_id", concept["concept_id"])
+        .maybe_single()
+        .execute()
+    )
+    if not q_res or not q_res.data:
+        raise HTTPException(status_code=500, detail="Next foundations question not found")
+
+    parsed = json.loads(q_res.data["question_text"])
+    next_question = {
+        "question_id": q_res.data["question_id"],
+        "concept_id": concept["concept_id"],
+        "concept_label": concept["label"],
+        "concept_index": next_index,
+        "text": parsed["text"],
+        "options": parsed["options"],
+    }
+    append_session_message(session_id, "ai", next_question["text"], metadata={
+        "tag": "Foundations Question",
+        "questionId": next_question["question_id"],
+        "conceptId": next_question["concept_id"],
+        "conceptLabel": next_question["concept_label"],
+        "conceptIndex": next_index,
+        "totalConcepts": len(FOUNDATIONS_CONCEPTS),
+        "questionText": next_question["text"],
+        "options": next_question["options"],
+    })
+    return {"correct": True, "done": False, "next": next_question}
+
+
+class FoundationsAnswerReq(BaseModel):
+    student_id: str
+    topic_id: str
+    session_id: str
+    question_id: str
+    concept_index: int
+    student_answer: str
+
+
+@app.post("/foundations/answer")
+async def answer_foundations(req: FoundationsAnswerReq):
+    try:
+        q_res = supabase.table("diagnostic_questions").select("correct_answer, concept_id").eq("question_id", req.question_id).single().execute()
+        if not q_res.data:
+            raise HTTPException(status_code=404, detail="Question not found")
+
+        is_correct = req.student_answer.strip().lower() == q_res.data["correct_answer"].strip().lower()
+        supabase.table("diagnostic_results").insert({
+            "result_id": f"res-{str(uuid.uuid4())[:6]}",
+            "student_id": req.student_id,
+            "question_id": req.question_id,
+            "student_answer": req.student_answer,
+            "is_correct": is_correct,
+        }).execute()
+
+        if is_correct:
+            return _foundations_next_payload(req.session_id, req.concept_index + 1)
+
+        concept = FOUNDATIONS_CONCEPTS[req.concept_index]
+        prompt = f"""A student just got a basic question about "{concept['label']}" wrong. Write a short, clear
+explanation (2-4 sentences) of this concept from first principles, generic and self-contained --
+do NOT reference any specific course, lecture, or algorithm.
+Return ONLY strict JSON: {{"explanation": "..."}}"""
+        response = _generate_content_with_retry(prompt)
+        explanation = parse_gemini_json(response).get("explanation")
+        if not isinstance(explanation, str) or not explanation.strip():
+            raise HTTPException(status_code=502, detail="AI returned invalid explanation")
+
+        append_session_message(req.session_id, "ai", explanation, metadata={
+            "tag": "Foundations Explanation",
+            "conceptId": concept["concept_id"],
+            "conceptLabel": concept["label"],
+            "conceptIndex": req.concept_index,
+            "totalConcepts": len(FOUNDATIONS_CONCEPTS),
+        })
+        return {"correct": False, "explanation": explanation}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("Foundations Answer Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to check foundations answer") from exc
+
+
+class FoundationsAdvanceReq(BaseModel):
+    student_id: str
+    topic_id: str
+    session_id: str
+    concept_index: int
+
+
+@app.post("/foundations/advance")
+async def advance_foundations(req: FoundationsAdvanceReq):
+    try:
+        return _foundations_next_payload(req.session_id, req.concept_index + 1)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("Foundations Advance Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to advance foundations gate") from exc
+
+
+# ==========================================
+# ON-DEMAND PRACTICE ASSIGNMENTS & QUIZZES
+# ==========================================
+# Student-initiated extra practice, separate from the Diagnose -> Explain ->
+# Check -> Retry mastery loop. The instructor's own uploaded practice
+# assignment/quiz for a topic is used ONLY as a style/structure reference --
+# never served as-is -- so the model writes genuinely new questions in the
+# same format instead of a copy. Same shared-spec-dict pattern RETRY_FORMATS
+# already uses for prose vs. Mermaid formats.
+
+PRACTICE_CONTENT_SPECS = {
+    "practice_assignment": {
+        "reference_document_type": "practice_assignment",
+        "count": 4,
+        "schema_instructions": """Write open-ended, worked-style problems (not multiple-choice).
+Return ONLY a JSON array of exactly 4 objects with this exact schema, nothing else (no markdown blocks, no intro):
+[
+  {
+    "question_text": "The problem statement here.",
+    "difficulty": "Easy" | "Medium" | "Hard",
+    "model_answer": "A complete worked solution, explained step by step."
+  }
+]""",
+    },
+    "quiz": {
+        "reference_document_type": "quiz",
+        "count": 5,
+        "schema_instructions": """Write multiple-choice questions.
+Return ONLY a JSON array of exactly 5 objects with this exact schema, nothing else (no markdown blocks, no intro):
+[
+  {
+    "question_text": "The question here?",
+    "options": ["A", "B", "C", "D"],
+    "correct_answer": "A",
+    "difficulty": "Easy" | "Medium" | "Hard"
+  }
+]""",
+    },
+}
+
+
+def _validate_practice_payload(content_type: str, questions) -> None:
+    if not isinstance(questions, list) or not questions:
+        raise HTTPException(status_code=502, detail="AI did not return a valid question list")
+    for q in questions:
+        if not isinstance(q, dict) or not isinstance(q.get("question_text"), str) or not q["question_text"].strip():
+            raise HTTPException(status_code=502, detail="AI returned a malformed question")
+        if content_type == "quiz":
+            if not isinstance(q.get("options"), list) or not q.get("options") or not q.get("correct_answer"):
+                raise HTTPException(status_code=502, detail="AI returned a malformed quiz question")
+        else:
+            if not isinstance(q.get("model_answer"), str) or not q["model_answer"].strip():
+                raise HTTPException(status_code=502, detail="AI returned a malformed practice question")
+
+
+class PracticeGenerateReq(BaseModel):
+    student_id: str
+    topic_id: str
+    content_type: str
+    force_regenerate: bool = False
+
+
+@app.post("/practice/generate")
+async def generate_practice_content(req: PracticeGenerateReq):
+    spec = PRACTICE_CONTENT_SPECS.get(req.content_type)
+    if not spec:
+        raise HTTPException(status_code=400, detail="Unknown content_type")
+
+    try:
+        ref_docs = (
+            supabase.table("documents")
+            .select("document_id")
+            .eq("topic_id", req.topic_id)
+            .eq("document_type", spec["reference_document_type"])
+            .execute()
+        )
+        if not ref_docs.data:
+            return {"error": f"No instructor {req.content_type.replace('_', ' ')} material found for this topic yet."}
+
+        if not req.force_regenerate:
+            existing = (
+                supabase.table("generated_practice_content")
+                .select("payload, generated_at")
+                .eq("student_id", req.student_id)
+                .eq("topic_id", req.topic_id)
+                .eq("content_type", req.content_type)
+                .maybe_single()
+                .execute()
+            )
+            if existing and existing.data:
+                return {"cached": True, "questions": existing.data["payload"], "generatedAt": existing.data["generated_at"]}
+
+        ref_ids = [d["document_id"] for d in ref_docs.data]
+        ref_chunks = supabase.table("chunks").select("chunk_text").in_("document_id", ref_ids).limit(10).execute()
+        # Client-side filter rather than a `.not_.in_()` chain -- simpler and
+        # avoids yet another supabase-py version quirk to work around.
+        all_topic_chunks = (
+            supabase.table("chunks").select("chunk_text, document_id").eq("topic_id", req.topic_id).limit(20).execute()
+        )
+        lecture_chunks = [c for c in (all_topic_chunks.data or []) if c["document_id"] not in ref_ids][:8]
+        if not lecture_chunks:
+            raise HTTPException(status_code=422, detail="No lecture content found for this topic")
+
+        prompt = f"""Study the STYLE REFERENCE below to learn this course's question types, structure, and
+difficulty -- do NOT reuse its actual questions, wording, or scenarios. Write genuinely new questions
+in the same style, testing the LECTURE CONTENT below, not the style reference's own content.
+{spec['schema_instructions']}
+
+Style reference (structure/difficulty guide only -- do not copy):
+{chr(10).join(c['chunk_text'] for c in (ref_chunks.data or []))}
+
+Lecture content the new questions must actually test:
+{chr(10).join(c['chunk_text'] for c in lecture_chunks)}"""
+
+        response = _generate_content_with_retry(prompt)
+        questions = json.loads(response.text)
+        _validate_practice_payload(req.content_type, questions)
+
+        generated_at = datetime.now(timezone.utc).isoformat()
+        supabase.table("generated_practice_content").upsert({
+            "student_id": req.student_id,
+            "topic_id": req.topic_id,
+            "content_type": req.content_type,
+            "reference_document_id": ref_ids[0],
+            "payload": questions,
+            "generated_at": generated_at,
+        }).execute()
+
+        return {"cached": False, "questions": questions, "generatedAt": generated_at}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("Practice Generate Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to generate practice content") from exc
+
+
+# ==========================================
+# PEER-EXPLANATION BUDDY (post-mastery only)
+# ==========================================
+# The Feynman technique: an AI persona plays a fellow student who hasn't
+# understood the lecture yet, and the real student has to explain it. Grounded
+# in the same topic content the mastery loop uses (plain chunk fetch, no
+# embed_content -- the persona has no per-turn search query, it just needs
+# fixed "this topic's content" every turn), but deliberately NOT another
+# formal Explain screen -- no citations, casual tone, gentle probing instead
+# of direct correction. Capped per session (not per topic -- see
+# MAX_PEER_BUDDY_TURNS) since this is a genuinely repeatable, revisitable
+# activity, not a one-shot check.
+
+MAX_PEER_BUDDY_TURNS = 6
+
+
+class PeerBuddyMessageReq(BaseModel):
+    student_id: str
+    topic_id: str
+    session_id: Optional[str] = None
+    student_message: str
+
+
+@app.post("/peer-buddy/message")
+async def peer_buddy_message(req: PeerBuddyMessageReq):
+    try:
+        session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id, session_type="peer_buddy")
+
+        prior_turns = (
+            supabase.table("session_messages")
+            .select("message_id", count="exact", head=True)
+            .eq("session_id", session_id)
+            .eq("sender", "student")
+            .execute()
+        ).count or 0
+
+        append_session_message(session_id, "student", req.student_message)
+
+        if prior_turns >= MAX_PEER_BUDDY_TURNS:
+            closer = "Okay, I think I've got it now — thanks for walking me through it!"
+            append_session_message(session_id, "ai", closer, metadata={"tag": "Peer Buddy", "capped": True})
+            return {"sessionId": session_id, "reply": closer, "capped": True}
+
+        chunks_res = supabase.table("chunks").select("chunk_text").eq("topic_id", req.topic_id).limit(8).execute()
+        recent = get_recent_session_messages(session_id)
+        prompt = f"""You are playing a fellow student who has NOT yet learned this topic and is a little
+confused. Stay in character: casual, curious, short follow-up questions, never lecture back, never
+cite sources or say "according to the text." If the real student's explanation is wrong or
+incomplete, gently probe instead of correcting directly (e.g. "wait, does that mean X always
+happens?") -- ground your confusion and follow-ups in the real content below, don't invent unrelated
+tangents.
+Return ONLY strict JSON: {{"reply": "..."}}
+
+Topic content (privately known to you -- never quote or cite it):
+{chr(10).join(c["chunk_text"] for c in (chunks_res.data or []))}
+
+Conversation so far:
+{format_session_context(recent)}"""
+
+        response = _generate_content_with_retry(prompt)
+        reply = parse_gemini_json(response).get("reply")
+        if not isinstance(reply, str) or not reply.strip():
+            raise HTTPException(status_code=502, detail="AI returned an invalid reply")
+
+        append_session_message(session_id, "ai", reply.strip(), metadata={"tag": "Peer Buddy"})
+        return {"sessionId": session_id, "reply": reply.strip(), "capped": prior_turns + 1 >= MAX_PEER_BUDDY_TURNS}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("Peer Buddy Message Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to get a reply") from exc
+
+
+class PeerBuddyHistoryReq(BaseModel):
+    student_id: str
+    topic_id: str
+
+
+@app.post("/peer-buddy/history")
+async def peer_buddy_history(req: PeerBuddyHistoryReq):
+    try:
+        session_id = find_active_session(req.student_id, req.topic_id, session_type="peer_buddy")
+        if not session_id:
+            return {"sessionId": None, "messages": []}
+
+        messages_res = (
+            supabase.table("session_messages")
+            .select("sender, message_text, metadata, timestamp")
+            .eq("session_id", session_id)
+            .order("timestamp")
+            .execute()
+        )
+        messages = [
+            {
+                "sender": row["sender"],
+                "text": row["message_text"],
+                **(row.get("metadata") or {}),
+            }
+            for row in (messages_res.data or [])
+        ]
+        return {"sessionId": session_id, "messages": messages}
+    except Exception as exc:
+        print("Peer Buddy History Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to load peer buddy history") from exc
 
 
 class QueryRequest(BaseModel):

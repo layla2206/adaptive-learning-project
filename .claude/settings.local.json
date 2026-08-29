@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(npm run *)",
-      "Bash(node drive13.mjs)"
+      "Bash(node drive13.mjs)",
+      "Bash(node -e ' *)"
     ]
   }
 }

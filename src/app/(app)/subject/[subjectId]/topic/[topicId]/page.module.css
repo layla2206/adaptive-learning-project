@@ -10,45 +10,33 @@
   color: var(--ink-soft);
 }
 
-/* Stepper */
-.stepper {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* Lecture progress */
+.progressWrap {
   margin-bottom: 40px;
 }
 
-.step {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.stepBar {
-  height: 3px;
-  border-radius: 2px;
-  background: var(--line);
-}
-
-.stepBar.done {
-  background: var(--plum);
-}
-
-.stepBar.current {
-  background: var(--plum);
-}
-
-.stepLabel {
+.progressLabel {
+  display: block;
   font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 0.64rem;
   color: var(--ink-faint);
+  margin-bottom: 8px;
 }
 
-.stepLabel.active {
-  color: var(--plum);
+.progressTrack {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--plum);
+  transition: width 0.3s ease;
 }
 
 /* Chat */

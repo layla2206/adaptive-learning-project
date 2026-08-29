@@ -34,9 +34,21 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ do
   }
 
   const body = await req.json();
-  const { lectureNumber, topicId } = body as { lectureNumber?: unknown; topicId?: unknown };
+  const { lectureNumber, topicId, documentType } = body as {
+    lectureNumber?: unknown;
+    topicId?: unknown;
+    documentType?: unknown;
+  };
 
-  const update: { lecture_number?: number; topic_id?: string | null } = {};
+  const update: { lecture_number?: number; topic_id?: string | null; document_type?: string | null } = {};
+
+  const ALLOWED_DOCUMENT_TYPES = new Set(["practice_assignment", "quiz"]);
+  if (documentType !== undefined) {
+    if (documentType !== null && (typeof documentType !== "string" || !ALLOWED_DOCUMENT_TYPES.has(documentType))) {
+      return NextResponse.json({ error: "documentType must be one of practice_assignment, quiz, or null" }, { status: 400 });
+    }
+    update.document_type = documentType;
+  }
 
   if (lectureNumber !== undefined) {
     if (typeof lectureNumber !== "number" || lectureNumber < 1) {
@@ -63,7 +75,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ do
   }
 
   if (Object.keys(update).length === 0) {
-    return NextResponse.json({ error: "lectureNumber and/or topicId is required" }, { status: 400 });
+    return NextResponse.json({ error: "lectureNumber, topicId, and/or documentType is required" }, { status: 400 });
   }
 
   const { error } = await supabase.from("documents").update(update).eq("document_id", documentId);
@@ -88,6 +100,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ do
     }
   }
 
-  return NextResponse.json({ ok: true, lectureNumber: update.lecture_number, topicId: update.topic_id });
+  return NextResponse.json({
+    ok: true,
+    lectureNumber: update.lecture_number,
+    topicId: update.topic_id,
+    documentType: update.document_type,
+  });
 }
 
