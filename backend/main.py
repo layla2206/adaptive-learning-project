@@ -1588,16 +1588,21 @@ Return ONLY a JSON array of exactly 4 objects with this exact schema, nothing el
         "reference_document_type": "quiz",
         "label": "Quiz",
         "count": 5,
-        "schema_instructions": """Write multiple-choice questions.
+        "schema_instructions": """Write a MIX of question types, the way a real instructor's quiz would --
+do not make every question multiple-choice. Use "multiple_choice" for concept checks, "short_answer" for
+questions that need a written explanation, and "code" for questions where the lecture content involves
+programming, algorithms, or data structures (write one where the content supports it).
 Return ONLY a JSON array of exactly 5 objects with this exact schema, nothing else (no markdown blocks, no intro):
 [
   {
-    "question_text": "The question here?",
+    "question_type": "multiple_choice" | "short_answer" | "code",
+    "question_text": "The question here. For a code question, state the coding task precisely (inputs, expected output/behavior).",
     "options": ["A", "B", "C", "D"],
-    "correct_answer": "A",
+    "correct_answer": "For multiple_choice: the exact text of the correct option. For short_answer: the expected answer. For code: a correct example solution (include code).",
     "difficulty": "Easy" | "Medium" | "Hard"
   }
-]""",
+]
+Omit the "options" field entirely for "short_answer" and "code" questions -- only "multiple_choice" questions have options.""",
     },
     "final_exam": {
         "reference_document_type": "exam",
@@ -1606,19 +1611,27 @@ Return ONLY a JSON array of exactly 5 objects with this exact schema, nothing el
         "fallback_reference_document_type": "quiz",
         "label": "Final Exam",
         "count": 15,
-        "schema_instructions": """Write multiple-choice questions for a comprehensive final exam covering
-the whole course. Return ONLY a JSON array of exactly 15 objects with this exact schema, nothing else
-(no markdown blocks, no intro):
+        "schema_instructions": """Write a MIX of question types for a comprehensive final exam covering the
+whole course, the way a real instructor's exam would -- do not make every question multiple-choice. Use
+"multiple_choice" for concept checks, "short_answer" for questions that need a written explanation, and "code"
+for questions where the course content involves programming, algorithms, or data structures (include several
+where the content supports it).
+Return ONLY a JSON array of exactly 15 objects with this exact schema, nothing else (no markdown blocks, no intro):
 [
   {
-    "question_text": "The question here?",
+    "question_type": "multiple_choice" | "short_answer" | "code",
+    "question_text": "The question here. For a code question, state the coding task precisely (inputs, expected output/behavior).",
     "options": ["A", "B", "C", "D"],
-    "correct_answer": "A",
+    "correct_answer": "For multiple_choice: the exact text of the correct option. For short_answer: the expected answer. For code: a correct example solution (include code).",
     "difficulty": "Easy" | "Medium" | "Hard"
   }
-]""",
+]
+Omit the "options" field entirely for "short_answer" and "code" questions -- only "multiple_choice" questions have options.""",
     },
 }
+
+
+_QUIZ_QUESTION_TYPES = ("multiple_choice", "short_answer", "code")
 
 
 def _validate_practice_payload(content_type: str, questions) -> None:
@@ -1628,8 +1641,12 @@ def _validate_practice_payload(content_type: str, questions) -> None:
         if not isinstance(q, dict) or not isinstance(q.get("question_text"), str) or not q["question_text"].strip():
             raise HTTPException(status_code=502, detail="AI returned a malformed question")
         if content_type in ("quiz", "final_exam"):
-            if not isinstance(q.get("options"), list) or not q.get("options") or not q.get("correct_answer"):
+            if q.get("question_type") not in _QUIZ_QUESTION_TYPES:
+                raise HTTPException(status_code=502, detail="AI returned a question with an invalid question_type")
+            if not isinstance(q.get("correct_answer"), str) or not q["correct_answer"].strip():
                 raise HTTPException(status_code=502, detail="AI returned a malformed quiz question")
+            if q["question_type"] == "multiple_choice" and (not isinstance(q.get("options"), list) or not q.get("options")):
+                raise HTTPException(status_code=502, detail="AI returned a malformed multiple-choice question")
         else:
             if not isinstance(q.get("model_answer"), str) or not q["model_answer"].strip():
                 raise HTTPException(status_code=502, detail="AI returned a malformed practice question")
@@ -1761,11 +1778,16 @@ async def generate_practice_content(req: PracticeGenerateReq):
         for topic_id in topic_ids:
             # Client-side filter rather than a `.not_.in_()` chain -- simpler
             # and avoids yet another supabase-py version quirk to work around.
+            # Fetch the topic's whole chunk set (bounded generously) before
+            # filtering out the reference doc's chunks -- filtering after a
+            # small `per_topic_cap * 3` page let a large reference document
+            # (e.g. a full graded PDF) fill the entire page and starve out
+            # every real lecture chunk, wrongly raising 422 below.
             topic_chunks = (
                 supabase.table("chunks")
                 .select("chunk_text, document_id")
                 .eq("topic_id", topic_id)
-                .limit(per_topic_cap * 3)
+                .limit(500)
                 .execute()
             )
             filtered = [c for c in (topic_chunks.data or []) if c["document_id"] not in ref_ids][:per_topic_cap]
