@@ -36,7 +36,7 @@ app = FastAPI(title="Adaptive Learning Backend API")
 # backend, etc). ALLOWED_ORIGINS is a comma-separated list -- unset locally
 # defaults to the Next.js dev server; set it on Render once the Vercel
 # domain is known so this never needs another code change.
-allowed_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+allowed_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,https://adaptive-learning-project.onrender.com").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
