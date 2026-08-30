@@ -42,10 +42,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ do
 
   const update: { lecture_number?: number; topic_id?: string | null; document_type?: string | null } = {};
 
-  const ALLOWED_DOCUMENT_TYPES = new Set(["practice_assignment", "quiz"]);
+  const ALLOWED_DOCUMENT_TYPES = new Set(["practice_assignment", "quiz", "exam"]);
   if (documentType !== undefined) {
     if (documentType !== null && (typeof documentType !== "string" || !ALLOWED_DOCUMENT_TYPES.has(documentType))) {
-      return NextResponse.json({ error: "documentType must be one of practice_assignment, quiz, or null" }, { status: 400 });
+      return NextResponse.json({ error: "documentType must be one of practice_assignment, quiz, exam, or null" }, { status: 400 });
     }
     update.document_type = documentType;
   }

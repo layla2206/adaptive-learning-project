@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -5,7 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from answer_generation import AnswerGenerationError, NO_CONTEXT_ANSWER, generate_answer
+from answer_generation import AnswerGenerationError, NO_CONTEXT_ANSWER, generate_answer, generate_structured_explanation
 
 
 class FakeGeminiClient:
@@ -65,6 +66,64 @@ class AnswerGenerationTests(unittest.TestCase):
 
         with self.assertRaises(AnswerGenerationError):
             generate_answer("What is traversal?", [{"chunk_text": "Some context.", "similarity": 0.9}], client)
+
+
+CHUNKS = [{"chunk_id": "chunk-1", "chunk_text": "Traversal visits graph nodes.", "similarity": 0.9}]
+
+
+class StructuredExplanationTests(unittest.TestCase):
+    def test_empty_chunks_return_no_context_sentinel_without_calling_model(self):
+        client = FakeGeminiClient()
+
+        result = generate_structured_explanation("What is traversal?", [], client)
+
+        self.assertEqual(result, NO_CONTEXT_ANSWER)
+        self.assertFalse(hasattr(client, "request"))
+
+    def test_returns_sections_check_question_and_solve_steps(self):
+        client = FakeGeminiClient(response_text=json.dumps({
+            "sections": [
+                {"heading": "Motivation", "body": "Why this matters [chunk-1]."},
+                {"heading": "The Mechanism", "body": "How it works [chunk-1]."},
+            ],
+            "checkQuestion": "Why is this faster than the naive approach?",
+            "solveSteps": ["Identify the input", "Apply the rule", "Check the result"],
+        }))
+
+        result = generate_structured_explanation("Explain traversal from the ground up.", CHUNKS, client)
+
+        self.assertEqual([s["heading"] for s in result["sections"]], ["Motivation", "The Mechanism"])
+        self.assertEqual(result["checkQuestion"], "Why is this faster than the naive approach?")
+        self.assertEqual(result["solveSteps"], ["Identify the input", "Apply the rule", "Check the result"])
+        self.assertIn("[chunk-1]", client.request["contents"])
+
+    def test_missing_check_question_and_solve_steps_fall_back_to_none(self):
+        client = FakeGeminiClient(response_text=json.dumps({
+            "sections": [{"heading": "Motivation", "body": "Why this matters [chunk-1]."}],
+        }))
+
+        result = generate_structured_explanation("Explain traversal.", CHUNKS, client)
+
+        self.assertIsNone(result["checkQuestion"])
+        self.assertIsNone(result["solveSteps"])
+
+    def test_missing_sections_raises(self):
+        client = FakeGeminiClient(response_text=json.dumps({"checkQuestion": "Why?"}))
+
+        with self.assertRaises(AnswerGenerationError):
+            generate_structured_explanation("Explain traversal.", CHUNKS, client)
+
+    def test_invalid_json_raises(self):
+        client = FakeGeminiClient(response_text="not json")
+
+        with self.assertRaises(AnswerGenerationError):
+            generate_structured_explanation("Explain traversal.", CHUNKS, client)
+
+    def test_model_failure_is_wrapped(self):
+        client = FakeGeminiClient(error=TimeoutError("timed out"))
+
+        with self.assertRaises(AnswerGenerationError):
+            generate_structured_explanation("Explain traversal.", CHUNKS, client)
 
 
 if __name__ == "__main__":

@@ -54,6 +54,9 @@ export default function SubjectPage() {
           <p className={styles.summaryStat}>
             {mastered} / {subject.topics.length} Topics Mastered
           </p>
+          <Link href={`/subject/${subject.id}/final-exam`} className={styles.finalExamButton}>
+            Final exam
+          </Link>
         </div>
         <ProgressRing percent={progress} size={92} strokeWidth={7} />
       </div>

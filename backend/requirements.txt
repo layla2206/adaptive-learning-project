@@ -5,6 +5,7 @@ boto3
 supabase
 google-genai
 PyPDF2
+weasyprint
 python-dotenv
 pydantic
 pytest

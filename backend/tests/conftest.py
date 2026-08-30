@@ -59,6 +59,7 @@ def mock_gemini(monkeypatch):
     class Controller:
         def __init__(self):
             self.call_count = 0
+            self.last_contents = None
             self._next_text = None
             self._next_exception = None
 
@@ -72,6 +73,7 @@ def mock_gemini(monkeypatch):
 
         def _generate_content(self, *, model, contents, config=None):
             self.call_count += 1
+            self.last_contents = contents
             if self._next_exception is not None:
                 raise self._next_exception
             return _FakeResponse(self._next_text if self._next_text is not None else "{}")
@@ -169,6 +171,55 @@ def tagged_reference_document(seeded_topic):
     supabase.table("documents").update({"document_type": "quiz"}).eq("document_id", document_id).execute()
     yield document_id
     supabase.table("documents").update({"document_type": None}).eq("document_id", document_id).execute()
+
+
+@pytest.fixture
+def tagged_exam_reference_document(seeded_topic):
+    """Tags one of seeded_topic's existing documents as an exam reference --
+    mirrors tagged_reference_document but for final_exam's own
+    reference_document_type ('exam') rather than quiz's fallback. Untags on
+    teardown."""
+    res = supabase.table("documents").select("document_id").eq("topic_id", seeded_topic["topic_id"]).limit(1).execute()
+    assert res.data, f"No document found on {seeded_topic['topic_id']} to tag as an exam reference document."
+    document_id = res.data[0]["document_id"]
+    supabase.table("documents").update({"document_type": "exam"}).eq("document_id", document_id).execute()
+    yield document_id
+    supabase.table("documents").update({"document_type": None}).eq("document_id", document_id).execute()
+
+
+@pytest.fixture
+def second_topic_with_content(seeded_topic, seeded_instructor_id):
+    """A second real topic in seeded_topic's own course, with its own
+    document + one embedded-looking chunk (a fixed non-null vector, no real
+    Gemini embed call) -- lets multi-topic quiz / final_exam tests aggregate
+    content across more than one topic without needing mock_embeddings.
+    Deletes everything it created on teardown."""
+    topic_id = f"pt{uuid.uuid4().hex[:6]}"
+    supabase.table("topics").insert(
+        {"topic_id": topic_id, "course_id": seeded_topic["course_id"], "topic_name": "Pytest Second Topic", "sort_order": 998}
+    ).execute()
+    document_id = f"pt{uuid.uuid4().hex[:6]}"
+    supabase.table("documents").insert({
+        "document_id": document_id,
+        "instructor_id": seeded_instructor_id,
+        "course_id": seeded_topic["course_id"],
+        "topic_id": topic_id,
+        "file_name": "pytest-second-topic.txt",
+        "file_type": "txt",
+    }).execute()
+    chunk_id = f"ptc{uuid.uuid4().hex[:8]}"
+    supabase.table("chunks").insert({
+        "chunk_id": chunk_id,
+        "document_id": document_id,
+        "topic_id": topic_id,
+        "page_number": 1,
+        "chunk_text": "Merge sort splits the array in half, recursively sorts each half, and merges the results.",
+        "embedding": [0.01] * 768,
+    }).execute()
+    yield {"topic_id": topic_id, "document_id": document_id}
+    supabase.table("chunks").delete().eq("document_id", document_id).execute()
+    supabase.table("documents").delete().eq("document_id", document_id).execute()
+    supabase.table("topics").delete().eq("topic_id", topic_id).execute()
 
 
 @pytest.fixture

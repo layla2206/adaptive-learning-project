@@ -28,12 +28,22 @@ describe("computeStuckCohort", () => {
     expect(stuckStudentIds).toEqual([]);
   });
 
-  it("mastery just below 100 does NOT exclude the student", () => {
+  it("a passed mastery score (70-99, not just exactly 100) also excludes the student", () => {
     const retryRows = [
       { student_id: "s1", topic_id: "t1" },
       { student_id: "s1", topic_id: "t1" },
     ];
-    const profileRows = [{ student_id: "s1", topic_id: "t1", mastery_percent: 99.5 }];
+    const profileRows = [{ student_id: "s1", topic_id: "t1", mastery_percent: 78 }];
+    const { stuckStudentIds } = computeStuckCohort("t1", retryRows, profileRows);
+    expect(stuckStudentIds).toEqual([]);
+  });
+
+  it("mastery just below the pass threshold does NOT exclude the student", () => {
+    const retryRows = [
+      { student_id: "s1", topic_id: "t1" },
+      { student_id: "s1", topic_id: "t1" },
+    ];
+    const profileRows = [{ student_id: "s1", topic_id: "t1", mastery_percent: 65 }];
     const { stuckStudentIds } = computeStuckCohort("t1", retryRows, profileRows);
     expect(stuckStudentIds).toEqual(["s1"]);
   });

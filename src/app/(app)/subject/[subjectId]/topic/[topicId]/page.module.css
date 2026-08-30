@@ -128,50 +128,63 @@
 }
 
 .bubble p + p {
-  margin-top: 10px;
+  margin-top: 14px;
 }
 
-/* Inline citation chips — click/tap to expand a source snippet below the message */
-.citeChip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  margin: 0 1px;
-  border-radius: 6px;
-  background: rgba(139, 58, 94, 0.12);
-  color: var(--plum);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
+/* Explanation sections (paced, Continue-driven delivery) -- real heading
+   elements with real spacing, not bold text jammed into a paragraph. */
+.explanationSection + .explanationSection {
+  margin-top: 22px;
+}
+
+.explanationHeading {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
   font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+
+.bubbleRow.user .explanationHeading {
+  color: #fff;
+}
+
+/* Inline citation markers -- a small superscript numeral in --plum, not a
+   filled badge, so it reads inline with the sentence instead of
+   interrupting it. Still a <button> -- click/tap expands the source snippet
+   below the message. */
+.citeChip {
+  display: inline;
+  vertical-align: super;
+  padding: 0 1px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.65em;
+  font-weight: 600;
+  color: var(--plum);
   cursor: pointer;
   outline: none;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  text-decoration: none;
+  transition: color 0.15s ease;
 }
 
 .citeChip:hover,
 .citeChip:focus-visible {
-  background: var(--plum);
-  color: #fff;
+  text-decoration: underline;
 }
 
 .citeChipOpen {
-  background: var(--plum);
-  color: #fff;
+  text-decoration: underline;
 }
 
 .bubbleRow.user .citeChip {
-  background: rgba(255, 255, 255, 0.22);
-  color: #fff;
+  color: rgba(255, 255, 255, 0.85);
 }
 
 .bubbleRow.user .citeChip:hover,
 .bubbleRow.user .citeChip:focus-visible,
 .bubbleRow.user .citeChipOpen {
-  background: #fff;
-  color: var(--plum-deep);
+  color: #fff;
 }
 
 .citationSnippet {
@@ -335,6 +348,74 @@
   border-color: var(--plum);
   color: var(--plum);
   background: rgba(139, 58, 94, 0.06);
+}
+
+.quizLectureList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.quizLectureOption {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+}
+
+.quizLectureOption:has(input:checked) {
+  border-color: var(--plum);
+  color: var(--plum);
+  background: rgba(139, 58, 94, 0.06);
+}
+
+.practiceToolsRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+
+.practiceToolsLink {
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  transition: border-color 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+}
+
+.practiceToolsLink:hover {
+  border-color: var(--plum);
+  color: var(--plum);
+  background: rgba(139, 58, 94, 0.06);
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 50;
+}
+
+.modalCard {
+  max-width: 480px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  margin-bottom: 0;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
 }
 
 /* Structured "solve it step by step" retry composer */

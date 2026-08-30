@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser, getStudentId } from "@/lib/authMiddleware";
 
-const FASTAPI_URL = "http://127.0.0.1:8000";
+const FASTAPI_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,13 +15,21 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { topicId, contentType, forceRegenerate } = body as {
-      topicId?: unknown;
+    const { topicIds, courseId, contentType, forceRegenerate } = body as {
+      topicIds?: unknown;
+      courseId?: unknown;
       contentType?: unknown;
       forceRegenerate?: unknown;
     };
-    if (typeof topicId !== "string" || (contentType !== "practice_assignment" && contentType !== "quiz")) {
-      return NextResponse.json({ error: "topicId and a valid contentType are required" }, { status: 400 });
+    if (contentType !== "practice_assignment" && contentType !== "quiz" && contentType !== "final_exam") {
+      return NextResponse.json({ error: "A valid contentType is required" }, { status: 400 });
+    }
+    if (contentType === "final_exam") {
+      if (typeof courseId !== "string" || !courseId) {
+        return NextResponse.json({ error: "courseId is required for final_exam" }, { status: 400 });
+      }
+    } else if (!Array.isArray(topicIds) || topicIds.length === 0 || !topicIds.every((id) => typeof id === "string")) {
+      return NextResponse.json({ error: "topicIds is required" }, { status: 400 });
     }
 
     // student_id is server-resolved, not taken from the request body.
@@ -29,7 +37,8 @@ export async function POST(req: NextRequest) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        topic_id: topicId,
+        topic_ids: contentType === "final_exam" ? [] : topicIds,
+        course_id: contentType === "final_exam" ? courseId : undefined,
         student_id: studentId,
         content_type: contentType,
         force_regenerate: forceRegenerate === true,
@@ -37,8 +46,14 @@ export async function POST(req: NextRequest) {
     });
 
     if (!response.ok) {
-      const err = await response.text();
-      return NextResponse.json({ error: `FastAPI Error: ${err}` }, { status: response.status });
+      const errText = await response.text();
+      let message = errText;
+      try {
+        message = JSON.parse(errText).detail ?? errText;
+      } catch {
+        /* not JSON -- fall back to the raw text */
+      }
+      return NextResponse.json({ error: message }, { status: response.status });
     }
 
     const data = await response.json();

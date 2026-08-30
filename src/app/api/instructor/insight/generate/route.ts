@@ -4,7 +4,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { isRateLimited } from "@/lib/rateLimit";
 import { computeStuckCohort, computeMistakeBreakdown } from "@/lib/instructorInsights";
 
-const FASTAPI_URL = "http://127.0.0.1:8000";
+const FASTAPI_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export async function POST(req: NextRequest) {
   const currentUser = getCurrentUser(req);

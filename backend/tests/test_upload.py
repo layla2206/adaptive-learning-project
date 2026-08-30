@@ -6,11 +6,12 @@ mocked via mock_embeddings so this costs zero Gemini quota."""
 
 import io
 import uuid
+from typing import Optional
 
 from main import supabase
 
 
-def _upload_txt(client, seeded_topic, seeded_instructor_id, text: str, filename: str | None = None):
+def _upload_txt(client, seeded_topic, seeded_instructor_id, text: str, filename: Optional[str] = None):
     filename = filename or f"pytest-upload-{uuid.uuid4().hex[:6]}.txt"
     return client.post(
         "/upload",
@@ -62,9 +63,11 @@ def test_upload_unsupported_file_type_still_succeeds_with_zero_chunks(client, mo
     )
     assert res.status_code == 200
     body = res.json()
-    assert body["success"] is True
-    assert body["chunksInserted"] == 0
-    client.request("DELETE", "/upload", json={"documentId": body["documentId"]})
+    try:
+        assert body["success"] is True
+        assert body["chunksInserted"] == 0
+    finally:
+        client.request("DELETE", "/upload", json={"documentId": body["documentId"]})
 
 
 def test_upload_missing_file_returns_422(client, seeded_topic, seeded_instructor_id):
@@ -80,19 +83,30 @@ def test_upload_missing_file_returns_422(client, seeded_topic, seeded_instructor
 
 
 def test_delete_cascades_chunks_and_removes_the_document(client, mock_embeddings, seeded_topic, seeded_instructor_id):
+    # Uploads real content into the shared live topic (this suite's whole
+    # convention -- see conftest.py's seeded_topic docstring), so the DELETE
+    # below MUST run even if an assertion above it fails, or this text stays
+    # stranded in real course content forever. Confirmed as a real incident,
+    # not a hypothetical one: a prior run without this try/finally left three
+    # of these uploads (plus two "Pytest Empty Topic" rows from a different
+    # fixture's own interrupted teardown) live in top-hash1, and a student
+    # asking about Hash Tables got this exact BST filler text back.
     text = "Binary search trees keep left children smaller and right children larger. " * 30
     upload_res = _upload_txt(client, seeded_topic, seeded_instructor_id, text)
     document_id = upload_res.json()["documentId"]
-    assert upload_res.json()["chunksInserted"] > 0
+    try:
+        assert upload_res.json()["chunksInserted"] > 0
 
-    delete_res = client.request("DELETE", "/upload", json={"documentId": document_id})
-    assert delete_res.status_code == 200
-    assert delete_res.json()["success"] is True
+        delete_res = client.request("DELETE", "/upload", json={"documentId": document_id})
+        assert delete_res.status_code == 200
+        assert delete_res.json()["success"] is True
 
-    doc_row = supabase.table("documents").select("document_id").eq("document_id", document_id).execute()
-    assert doc_row.data == []
-    chunk_rows = supabase.table("chunks").select("chunk_id").eq("document_id", document_id).execute()
-    assert chunk_rows.data == []  # ON DELETE CASCADE (delete_cascade_migration.sql), not a second explicit delete
+        doc_row = supabase.table("documents").select("document_id").eq("document_id", document_id).execute()
+        assert doc_row.data == []
+        chunk_rows = supabase.table("chunks").select("chunk_id").eq("document_id", document_id).execute()
+        assert chunk_rows.data == []  # ON DELETE CASCADE (delete_cascade_migration.sql), not a second explicit delete
+    finally:
+        client.request("DELETE", "/upload", json={"documentId": document_id})
 
 
 def test_delete_nonexistent_document_is_a_no_op_success(client):

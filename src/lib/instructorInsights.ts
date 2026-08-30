@@ -1,4 +1,4 @@
-import { computeWeakAreaTrends } from "./studentProgress";
+import { computeWeakAreaTrends, MASTERY_PASS_THRESHOLD } from "./studentProgress";
 import { MISTAKE_TAG_LABELS } from "./mistakeTags";
 import type { MistakeBreakdownEntry } from "./instructorData";
 
@@ -34,7 +34,7 @@ export function computeStuckCohort(
     attemptsByStudent.set(r.student_id, (attemptsByStudent.get(r.student_id) ?? 0) + 1);
   }
   const masteredStudents = new Set(
-    profileRows.filter((p) => p.topic_id === topicId && Number(p.mastery_percent) >= 100).map((p) => p.student_id)
+    profileRows.filter((p) => p.topic_id === topicId && Number(p.mastery_percent) >= MASTERY_PASS_THRESHOLD).map((p) => p.student_id)
   );
   const stuckEntries = Array.from(attemptsByStudent.entries()).filter(
     ([studentId, count]) => count >= 2 && !masteredStudents.has(studentId)

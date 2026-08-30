@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/authMiddleware";
 import { supabase } from "@/lib/supabaseClient";
 
-const FASTAPI_URL = "http://127.0.0.1:8000";
+const FASTAPI_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export async function POST(req: NextRequest) {
   const currentUser = getCurrentUser(req);
@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
         topic_id: body.topicId,
         question: body.question,
         session_id: typeof body.sessionId === "string" ? body.sessionId : undefined,
+        full_explanation: body.fullExplanation === true,
       }),
     });
     const data = await response.json();

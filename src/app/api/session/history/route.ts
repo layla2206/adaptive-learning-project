@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/authMiddleware";
 import { supabase } from "@/lib/supabaseClient";
 
-const FASTAPI_URL = "http://127.0.0.1:8000";
+const FASTAPI_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export async function GET(req: NextRequest) {
   const currentUser = getCurrentUser(req);

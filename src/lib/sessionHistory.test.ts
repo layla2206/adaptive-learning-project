@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { restoreFromHistory, mapHistoryRowsToMessages, type HistoryRow } from "./sessionHistory";
+import {
+  restoreFromHistory,
+  mapHistoryRowsToMessages,
+  parseExplanationSections,
+  errorMessageFor,
+  QUOTA_ERROR_MESSAGE,
+  type HistoryRow,
+} from "./sessionHistory";
 
 describe("restoreFromHistory", () => {
   it("returns null for no history at all", () => {
@@ -149,5 +156,97 @@ describe("mapHistoryRowsToMessages", () => {
     const rows: HistoryRow[] = [{ text: "a", tag: "Feedback" }, { text: "b", tag: "Feedback" }];
     const [first, second] = mapHistoryRowsToMessages(rows);
     expect(first.id).not.toBe(second.id);
+  });
+
+  it("a multi-section explanation gets sections and paragraphs is empty, fully revealed", () => {
+    const rows: HistoryRow[] = [
+      { text: "### Motivation\n\nWhy this matters.\n\n### The Mechanism\n\nHow it works.", tag: "Grounded Explanation" },
+    ];
+    const [msg] = mapHistoryRowsToMessages(rows);
+    expect(msg.paragraphs).toEqual([]);
+    expect(msg.sections).toEqual([
+      { heading: "Motivation", body: "Why this matters." },
+      { heading: "The Mechanism", body: "How it works." },
+    ]);
+    expect(msg.revealedCount).toBe(2);
+  });
+
+  it("a single-heading answer (not a real multi-section explanation) stays a plain paragraph", () => {
+    const rows: HistoryRow[] = [{ text: "### Only One Heading\n\nJust one section.", tag: "Grounded Explanation" }];
+    const [msg] = mapHistoryRowsToMessages(rows);
+    expect(msg.sections).toBeUndefined();
+    expect(msg.paragraphs).toEqual(["### Only One Heading\n\nJust one section."]);
+  });
+});
+
+describe("parseExplanationSections", () => {
+  it("splits on ### heading boundaries into ordered {heading, body} pairs", () => {
+    const text = "### Motivation\n\nWhy this matters [1].\n\n### The Mechanism\n\nHow it works [2].";
+    expect(parseExplanationSections(text)).toEqual([
+      { heading: "Motivation", body: "Why this matters [1]." },
+      { heading: "The Mechanism", body: "How it works [2]." },
+    ]);
+  });
+
+  it("returns [] for text with fewer than 2 headings", () => {
+    expect(parseExplanationSections("Just plain text, no headings at all.")).toEqual([]);
+    expect(parseExplanationSections("### Only One\n\nBody text.")).toEqual([]);
+  });
+});
+
+describe("restoreFromHistory -- checkQuestion/solveSteps", () => {
+  it("surfaces checkQuestion/solveSteps from the row that generated them", () => {
+    const rows: HistoryRow[] = [
+      {
+        text: "### Motivation\n\nWhy this matters.\n\n### The Mechanism\n\nHow it works.",
+        tag: "Grounded Explanation",
+        checkQuestion: "Why is this faster than the naive approach?",
+        solveSteps: ["Step one", "Step two", "Step three"],
+      },
+    ];
+    const result = restoreFromHistory(rows);
+    expect(result?.checkQuestion).toBe("Why is this faster than the naive approach?");
+    expect(result?.solveSteps).toEqual(["Step one", "Step two", "Step three"]);
+  });
+
+  it("finds checkQuestion/solveSteps on an earlier row even when the LAST row is a plain follow-up answer", () => {
+    const rows: HistoryRow[] = [
+      {
+        text: "### Motivation\n\nWhy this matters.\n\n### The Mechanism\n\nHow it works.",
+        tag: "Grounded Explanation",
+        checkQuestion: "Why is this faster than the naive approach?",
+        solveSteps: ["Step one", "Step two", "Step three"],
+      },
+      { text: "Here's the answer to your follow-up question.", tag: "Grounded Explanation" },
+    ];
+    const result = restoreFromHistory(rows);
+    expect(result?.stage).toBe("explain-shown");
+    expect(result?.checkQuestion).toBe("Why is this faster than the naive approach?");
+    expect(result?.solveSteps).toEqual(["Step one", "Step two", "Step three"]);
+  });
+
+  it("leaves checkQuestion/solveSteps undefined when no row has them (pre-feature session)", () => {
+    const rows: HistoryRow[] = [{ text: "Here's the explanation.", tag: "Grounded Explanation" }];
+    const result = restoreFromHistory(rows);
+    expect(result?.checkQuestion).toBeUndefined();
+    expect(result?.solveSteps).toBeUndefined();
+  });
+});
+
+describe("errorMessageFor", () => {
+  it("returns the honest quota message when the error mentions quota (case-insensitive)", () => {
+    expect(errorMessageFor(new Error("Gemini quota exceeded for today -- try again later"), "fallback")).toBe(
+      QUOTA_ERROR_MESSAGE
+    );
+    expect(errorMessageFor(new Error("QUOTA EXCEEDED"), "fallback")).toBe(QUOTA_ERROR_MESSAGE);
+  });
+
+  it("returns the fallback for a non-quota Error", () => {
+    expect(errorMessageFor(new Error("Something went wrong"), "fallback")).toBe("fallback");
+  });
+
+  it("returns the fallback for a non-Error thrown value (e.g. a network failure with no message)", () => {
+    expect(errorMessageFor("a plain string", "fallback")).toBe("fallback");
+    expect(errorMessageFor(undefined, "fallback")).toBe("fallback");
   });
 });

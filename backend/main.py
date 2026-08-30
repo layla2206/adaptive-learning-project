@@ -17,9 +17,10 @@ import httpx
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError, ServerError
-from answer_generation import generate_answer, AnswerGenerationError, NO_CONTEXT_ANSWER
+from answer_generation import generate_answer, generate_structured_explanation, AnswerGenerationError, NO_CONTEXT_ANSWER
 from citations import map_chunk, map_citations
 from retrieval import retrieve_context
+from pdf_generation import render_questions_pdf, render_answer_key_pdf
 
 # Load .env from the parent directory — this repo keeps real config in
 # .env (not .env.local, which doesn't exist here), so point dotenv at that.
@@ -27,14 +28,30 @@ load_dotenv(dotenv_path="../.env")
 
 app = FastAPI(title="Adaptive Learning Backend API")
 
-# Allow requests from the Next.js frontend
+# The Next.js API routes proxy to this backend server-to-server (see e.g.
+# src/app/api/query/route.ts's FASTAPI_URL fetch), which isn't subject to
+# CORS at all -- browsers only enforce it on requests they issue themselves.
+# This middleware only matters if something ever calls this API directly
+# from a browser (a future admin tool, local testing against a deployed
+# backend, etc). ALLOWED_ORIGINS is a comma-separated list -- unset locally
+# defaults to the Next.js dev server; set it on Render once the Vercel
+# domain is known so this never needs another code change.
+allowed_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust in production
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+async def health_check():
+    """Minimal liveness probe for Render's health check -- confirms the
+    process is up and answering, not that any downstream dependency
+    (Supabase, Gemini, R2) is reachable."""
+    return {"status": "ok"}
 
 # Initialize Supabase
 supabase_url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
@@ -94,6 +111,12 @@ _MOCK_GEMINI_FIXTURES = [
     # Same reasoning for quiz-mode /practice/generate just below it.
     ("in this exact order:", '[{"question_text": "Mock foundations Q1?", "options": ["A", "B", "C", "D"], "correct_answer": "A"}, {"question_text": "Mock foundations Q2?", "options": ["A", "B", "C", "D"], "correct_answer": "B"}, {"question_text": "Mock foundations Q3?", "options": ["A", "B", "C", "D"], "correct_answer": "C"}, {"question_text": "Mock foundations Q4?", "options": ["A", "B", "C", "D"], "correct_answer": "D"}]'),
     ("Write multiple-choice questions.", '[{"question_text": "Mock quiz Q1?", "options": ["A", "B", "C", "D"], "correct_answer": "A", "difficulty": "Medium"}, {"question_text": "Mock quiz Q2?", "options": ["A", "B", "C", "D"], "correct_answer": "B", "difficulty": "Medium"}, {"question_text": "Mock quiz Q3?", "options": ["A", "B", "C", "D"], "correct_answer": "C", "difficulty": "Medium"}, {"question_text": "Mock quiz Q4?", "options": ["A", "B", "C", "D"], "correct_answer": "D", "difficulty": "Medium"}, {"question_text": "Mock quiz Q5?", "options": ["A", "B", "C", "D"], "correct_answer": "A", "difficulty": "Medium"}]'),
+    # final_exam's schema_instructions text diverges from quiz's right after
+    # "Write multiple-choice questions" (quiz ends the sentence there; this
+    # one continues "...for a comprehensive final exam covering..."), so it
+    # needs its own marker rather than falling through to quiz's or the
+    # generic '"correct_answer"' diagnostic fixture below.
+    ("comprehensive final exam", '[{"question_text": "Mock final exam Q1?", "options": ["A", "B", "C", "D"], "correct_answer": "A", "difficulty": "Medium"}, {"question_text": "Mock final exam Q2?", "options": ["A", "B", "C", "D"], "correct_answer": "B", "difficulty": "Medium"}, {"question_text": "Mock final exam Q3?", "options": ["A", "B", "C", "D"], "correct_answer": "C", "difficulty": "Medium"}]'),
     ('"correct_answer"', '[{"question_text": "Mock diagnostic question 1?", "options": ["A", "B", "C", "D"], "correct_answer": "A", "difficulty": "Medium"}, {"question_text": "Mock diagnostic question 2?", "options": ["A", "B", "C", "D"], "correct_answer": "B", "difficulty": "Medium"}]'),
     ("Write open-ended, worked-style problems", '[{"question_text": "Mock practice question 1?", "difficulty": "Medium", "model_answer": "Mock worked solution, step by step."}, {"question_text": "Mock practice question 2?", "difficulty": "Medium", "model_answer": "Mock worked solution, step by step."}]'),
     ('got a basic question about "', '{"explanation": "Mock foundations explanation for testing."}'),
@@ -564,6 +587,9 @@ async def generate_diagnostic(req: DiagnosticGenerateReq):
         # Call Gemini to generate 2 MCQ questions
         prompt = f"""
         Based on the following educational content, generate 2 multiple-choice diagnostic questions to test a student's understanding.
+        Each question must target one specific named mechanism, behavior, or comparison from the content -- not general understanding.
+        Bad: "What do you know about hash tables?" or "Which statement about hash tables is true?"
+        Better: "What happens when two keys hash to the same index in a hash table?" -- it names one specific mechanism (collisions) instead of inviting a general summary.
         No question may reference, quote, or assume the student has seen any specific code snippet, diagram, or "the provided implementation" unless that exact code is fully reproduced within the question text itself -- the diagnostic UI only ever shows question text and options, never source content.
         {prereq_instruction}
         Return ONLY a JSON array of objects with the exact following schema, nothing else (no markdown blocks, no intro):
@@ -705,18 +731,30 @@ def renumber_inline_citations(text: str, chunks: List[dict]):
     but the frontend only recognizes single-digit markers like [1]/[2] and matches
     them against citation.mark exactly (see renderCite in the topic page) -- so the
     text and the citation list have to be renumbered together, not independently.
-    Shared by /query and /retry/generate's prose formats."""
+    Shared by /query and /retry/generate's prose formats.
+
+    A bracket can also carry more than one id for a single claim -- e.g.
+    "[4d5b6eda-0153-4, 6810e066-0ef2-4]" -- despite every prompt's example only
+    ever showing one. Matching only a bracket that is EXACTLY one known id
+    used to leave that whole bracket (real UUIDs and all) untouched in the
+    text shown to the student -- confirmed live, not just theoretical."""
     known_ids = {chunk.get("chunk_id") for chunk in chunks}
     cited_ids_in_order = []
-    for match in re.findall(r"\[([^\[\]]+)\]", text):
-        if match in known_ids and match not in cited_ids_in_order:
-            cited_ids_in_order.append(match)
+    for raw in re.findall(r"\[([^\[\]]+)\]", text):
+        for candidate in raw.split(","):
+            candidate = candidate.strip()
+            if candidate in known_ids and candidate not in cited_ids_in_order:
+                cited_ids_in_order.append(candidate)
 
     citations = map_citations(chunks, cited_ids_in_order)
+    mark_by_id = {original_id: citation["mark"] for citation, original_id in zip(citations, cited_ids_in_order)}
 
-    rewritten = text
-    for citation, original_id in zip(citations, cited_ids_in_order):
-        rewritten = rewritten.replace(f"[{original_id}]", citation["mark"])
+    def _replace_bracket(match: re.Match) -> str:
+        ids = [part.strip() for part in match.group(1).split(",")]
+        marks = [mark_by_id[i] for i in ids if i in mark_by_id]
+        return "".join(marks) if marks else match.group(0)
+
+    rewritten = re.sub(r"\[([^\[\]]+)\]", _replace_bracket, text)
 
     return rewritten, citations
 
@@ -855,6 +893,32 @@ def get_recent_session_messages(session_id: str, limit: int = 10) -> List[dict]:
     return list(reversed(messages.data or []))
 
 
+def get_session_cited_chunk_ids(session_id: str) -> List[str]:
+    """Every chunk_id ever cited to this student in this session, in first-
+    seen order -- the source-of-truth set for grading, so /mastery/check
+    never contradicts content /query actually showed during Explain. Reuses
+    session_messages.metadata.citations (already stored by /query and
+    /retry/generate) rather than re-retrieving, which is what let grading
+    silently pull a different slice of the topic's chunks than the student
+    was ever shown."""
+    rows = (
+        supabase.table("session_messages")
+        .select("metadata")
+        .eq("session_id", session_id)
+        .eq("sender", "ai")
+        .execute()
+    )
+    ids: List[str] = []
+    seen = set()
+    for row in rows.data or []:
+        for citation in (row.get("metadata") or {}).get("citations") or []:
+            chunk_id = citation.get("chunk_id")
+            if chunk_id and chunk_id not in seen:
+                seen.add(chunk_id)
+                ids.append(chunk_id)
+    return ids
+
+
 def format_session_context(messages: List[dict]) -> str:
     if not messages:
         return "No prior conversation context."
@@ -922,7 +986,18 @@ async def check_mastery(req: MasteryCheckRequest):
 
     try:
         session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
-        chunks_res = supabase.table("chunks").select("chunk_text").eq("topic_id", req.topic_id).limit(8).execute()
+        # Grade against the exact chunks this student was actually shown in
+        # this session (via /query's or /retry/generate's citations) --
+        # falling back to an arbitrary topic-wide fetch only when there's no
+        # prior Explain to anchor to (e.g. mastery/check called cold). Grading
+        # against a fresh, independent topic-wide fetch used to let the AI
+        # reject wording the app itself had just used, since the two calls
+        # could easily land on different chunks.
+        cited_chunk_ids = get_session_cited_chunk_ids(session_id)
+        if cited_chunk_ids:
+            chunks_res = supabase.table("chunks").select("chunk_text").in_("chunk_id", cited_chunk_ids).execute()
+        else:
+            chunks_res = supabase.table("chunks").select("chunk_text").eq("topic_id", req.topic_id).limit(8).execute()
         if not chunks_res.data:
             raise HTTPException(status_code=422, detail="No learning content found for this topic")
 
@@ -1477,18 +1552,27 @@ async def advance_foundations(req: FoundationsAdvanceReq):
 
 
 # ==========================================
-# ON-DEMAND PRACTICE ASSIGNMENTS & QUIZZES
+# ON-DEMAND PRACTICE ASSIGNMENTS, QUIZZES & FINAL EXAMS
 # ==========================================
 # Student-initiated extra practice, separate from the Diagnose -> Explain ->
 # Check -> Retry mastery loop. The instructor's own uploaded practice
-# assignment/quiz for a topic is used ONLY as a style/structure reference --
-# never served as-is -- so the model writes genuinely new questions in the
-# same format instead of a copy. Same shared-spec-dict pattern RETRY_FORMATS
-# already uses for prose vs. Mermaid formats.
+# assignment/quiz/exam for a topic (or course, for final_exam) is used ONLY
+# as a style/structure reference -- never served as-is -- so the model
+# writes genuinely new questions in the same format instead of a copy. Same
+# shared-spec-dict pattern RETRY_FORMATS already uses for prose vs. Mermaid
+# formats.
+#
+# practice_assignment stays single-lecture. quiz and final_exam both aggregate
+# content across a list of topic_ids -- quiz's list is student-chosen
+# (checked in the Mastered Hub), final_exam's is auto-resolved to every topic
+# in the course. Caching key is (student_id, content_type, topic_ids) where
+# topic_ids is a sorted, comma-joined string -- a plain app-validated field,
+# matching this table's existing convention, rather than an array PK.
 
 PRACTICE_CONTENT_SPECS = {
     "practice_assignment": {
         "reference_document_type": "practice_assignment",
+        "label": "Practice Assignment",
         "count": 4,
         "schema_instructions": """Write open-ended, worked-style problems (not multiple-choice).
 Return ONLY a JSON array of exactly 4 objects with this exact schema, nothing else (no markdown blocks, no intro):
@@ -1502,9 +1586,29 @@ Return ONLY a JSON array of exactly 4 objects with this exact schema, nothing el
     },
     "quiz": {
         "reference_document_type": "quiz",
+        "label": "Quiz",
         "count": 5,
         "schema_instructions": """Write multiple-choice questions.
 Return ONLY a JSON array of exactly 5 objects with this exact schema, nothing else (no markdown blocks, no intro):
+[
+  {
+    "question_text": "The question here?",
+    "options": ["A", "B", "C", "D"],
+    "correct_answer": "A",
+    "difficulty": "Easy" | "Medium" | "Hard"
+  }
+]""",
+    },
+    "final_exam": {
+        "reference_document_type": "exam",
+        # Falls back to the course's quiz reference if the instructor hasn't
+        # uploaded a real past exam -- better than failing outright.
+        "fallback_reference_document_type": "quiz",
+        "label": "Final Exam",
+        "count": 15,
+        "schema_instructions": """Write multiple-choice questions for a comprehensive final exam covering
+the whole course. Return ONLY a JSON array of exactly 15 objects with this exact schema, nothing else
+(no markdown blocks, no intro):
 [
   {
     "question_text": "The question here?",
@@ -1523,7 +1627,7 @@ def _validate_practice_payload(content_type: str, questions) -> None:
     for q in questions:
         if not isinstance(q, dict) or not isinstance(q.get("question_text"), str) or not q["question_text"].strip():
             raise HTTPException(status_code=502, detail="AI returned a malformed question")
-        if content_type == "quiz":
+        if content_type in ("quiz", "final_exam"):
             if not isinstance(q.get("options"), list) or not q.get("options") or not q.get("correct_answer"):
                 raise HTTPException(status_code=502, detail="AI returned a malformed quiz question")
         else:
@@ -1533,9 +1637,38 @@ def _validate_practice_payload(content_type: str, questions) -> None:
 
 class PracticeGenerateReq(BaseModel):
     student_id: str
-    topic_id: str
+    topic_ids: List[str] = []
+    course_id: Optional[str] = None
     content_type: str
     force_regenerate: bool = False
+
+
+def _sanitize_r2_key_part(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]", "_", value)
+
+
+def _generated_pdf_keys(student_id: str, content_type: str, topic_ids_key: str) -> tuple[str, str]:
+    scope = _sanitize_r2_key_part(topic_ids_key)
+    base = f"generated-content/{student_id}/{content_type}-{scope}"
+    return f"{base}-questions.pdf", f"{base}-answer_key.pdf"
+
+
+def _render_and_store_pdfs(content_type: str, label: str, course_id: str, title: str, questions: list, student_id: str, topic_ids_key: str) -> tuple[str, str]:
+    """Renders both PDFs from already-generated question payload and uploads
+    them to R2 -- shared by the fresh-generation path and the legacy-cache
+    backfill path (a cached row from before PDF support existed)."""
+    eyebrow = f"{label} · {course_id.upper()}"
+    questions_pdf = render_questions_pdf(content_type, eyebrow, title, questions)
+    answer_key_pdf = render_answer_key_pdf(content_type, eyebrow, title, questions)
+
+    questions_key, answer_key_key = _generated_pdf_keys(student_id, content_type, topic_ids_key)
+    s3_client.put_object(Bucket=r2_bucket_name, Key=questions_key, Body=questions_pdf, ContentType="application/pdf")
+    s3_client.put_object(Bucket=r2_bucket_name, Key=answer_key_key, Body=answer_key_pdf, ContentType="application/pdf")
+    return questions_key, answer_key_key
+
+
+def _presign_pdf_url(key: str) -> str:
+    return s3_client.generate_presigned_url("get_object", Params={"Bucket": r2_bucket_name, "Key": key}, ExpiresIn=3600)
 
 
 @app.post("/practice/generate")
@@ -1545,39 +1678,100 @@ async def generate_practice_content(req: PracticeGenerateReq):
         raise HTTPException(status_code=400, detail="Unknown content_type")
 
     try:
-        ref_docs = (
-            supabase.table("documents")
-            .select("document_id")
-            .eq("topic_id", req.topic_id)
-            .eq("document_type", spec["reference_document_type"])
-            .execute()
-        )
-        if not ref_docs.data:
-            return {"error": f"No instructor {req.content_type.replace('_', ' ')} material found for this topic yet."}
+        if req.content_type == "final_exam":
+            if not req.course_id:
+                raise HTTPException(status_code=400, detail="course_id is required for final_exam")
+            course_topics = supabase.table("topics").select("topic_id, topic_name").eq("course_id", req.course_id).execute()
+            if not course_topics.data:
+                raise HTTPException(status_code=422, detail="This course has no topics yet")
+            topic_ids = [t["topic_id"] for t in course_topics.data]
+            topic_rows = course_topics.data
+            course_id = req.course_id
+        else:
+            if not req.topic_ids:
+                raise HTTPException(status_code=400, detail="topic_ids is required")
+            topic_ids = req.topic_ids
+            topic_rows = supabase.table("topics").select("topic_id, topic_name, course_id").in_("topic_id", topic_ids).execute().data or []
+            if not topic_rows:
+                raise HTTPException(status_code=422, detail="No matching topics found")
+            course_id = topic_rows[0]["course_id"]
 
+        topic_ids_key = ",".join(sorted(topic_ids))
+        topic_names = [t["topic_name"] for t in topic_rows]
+        course_res = supabase.table("courses").select("course_name").eq("course_id", course_id).maybe_single().execute()
+        course_name = course_res.data["course_name"] if course_res and course_res.data else course_id
+        title = f"{course_name} Final Exam" if req.content_type == "final_exam" else ", ".join(topic_names)
+
+        existing = None
         if not req.force_regenerate:
             existing = (
                 supabase.table("generated_practice_content")
-                .select("payload, generated_at")
+                .select("payload, generated_at, questions_pdf_key, answer_key_pdf_key")
                 .eq("student_id", req.student_id)
-                .eq("topic_id", req.topic_id)
                 .eq("content_type", req.content_type)
+                .eq("topic_ids", topic_ids_key)
                 .maybe_single()
                 .execute()
             )
-            if existing and existing.data:
-                return {"cached": True, "questions": existing.data["payload"], "generatedAt": existing.data["generated_at"]}
+            existing = existing.data if existing else None
+
+        if existing:
+            questions = existing["payload"]
+            questions_pdf_key = existing.get("questions_pdf_key")
+            answer_key_pdf_key = existing.get("answer_key_pdf_key")
+            if not questions_pdf_key or not answer_key_pdf_key:
+                questions_pdf_key, answer_key_pdf_key = _render_and_store_pdfs(
+                    req.content_type, spec["label"], course_id, title, questions, req.student_id, topic_ids_key
+                )
+                supabase.table("generated_practice_content").update({
+                    "questions_pdf_key": questions_pdf_key,
+                    "answer_key_pdf_key": answer_key_pdf_key,
+                }).eq("student_id", req.student_id).eq("content_type", req.content_type).eq("topic_ids", topic_ids_key).execute()
+            return {
+                "cached": True,
+                "questionCount": len(questions),
+                "generatedAt": existing["generated_at"],
+                "questionsPdfUrl": _presign_pdf_url(questions_pdf_key),
+                "answerKeyPdfUrl": _presign_pdf_url(answer_key_pdf_key),
+            }
+
+        ref_docs_query = supabase.table("documents").select("document_id")
+        if req.content_type == "final_exam":
+            ref_docs = ref_docs_query.eq("course_id", course_id).eq("document_type", spec["reference_document_type"]).execute()
+            if not ref_docs.data:
+                ref_docs = (
+                    supabase.table("documents")
+                    .select("document_id")
+                    .eq("course_id", course_id)
+                    .eq("document_type", spec["fallback_reference_document_type"])
+                    .execute()
+                )
+        else:
+            ref_docs = ref_docs_query.in_("topic_id", topic_ids).eq("document_type", spec["reference_document_type"]).execute()
+        if not ref_docs.data:
+            return {"error": f"No instructor {req.content_type.replace('_', ' ')} material found yet."}
 
         ref_ids = [d["document_id"] for d in ref_docs.data]
         ref_chunks = supabase.table("chunks").select("chunk_text").in_("document_id", ref_ids).limit(10).execute()
-        # Client-side filter rather than a `.not_.in_()` chain -- simpler and
-        # avoids yet another supabase-py version quirk to work around.
-        all_topic_chunks = (
-            supabase.table("chunks").select("chunk_text, document_id").eq("topic_id", req.topic_id).limit(20).execute()
-        )
-        lecture_chunks = [c for c in (all_topic_chunks.data or []) if c["document_id"] not in ref_ids][:8]
+
+        # Cap chunks per topic as the selection grows, so a multi-lecture
+        # quiz or a whole-course final exam doesn't balloon the prompt.
+        per_topic_cap = max(2, 8 // len(topic_ids))
+        lecture_chunks = []
+        for topic_id in topic_ids:
+            # Client-side filter rather than a `.not_.in_()` chain -- simpler
+            # and avoids yet another supabase-py version quirk to work around.
+            topic_chunks = (
+                supabase.table("chunks")
+                .select("chunk_text, document_id")
+                .eq("topic_id", topic_id)
+                .limit(per_topic_cap * 3)
+                .execute()
+            )
+            filtered = [c for c in (topic_chunks.data or []) if c["document_id"] not in ref_ids][:per_topic_cap]
+            lecture_chunks.extend(filtered)
         if not lecture_chunks:
-            raise HTTPException(status_code=422, detail="No lecture content found for this topic")
+            raise HTTPException(status_code=422, detail="No lecture content found for these topics")
 
         prompt = f"""Study the STYLE REFERENCE below to learn this course's question types, structure, and
 difficulty -- do NOT reuse its actual questions, wording, or scenarios. Write genuinely new questions
@@ -1594,17 +1788,29 @@ Lecture content the new questions must actually test:
         questions = json.loads(response.text)
         _validate_practice_payload(req.content_type, questions)
 
+        questions_pdf_key, answer_key_pdf_key = _render_and_store_pdfs(
+            req.content_type, spec["label"], course_id, title, questions, req.student_id, topic_ids_key
+        )
+
         generated_at = datetime.now(timezone.utc).isoformat()
         supabase.table("generated_practice_content").upsert({
             "student_id": req.student_id,
-            "topic_id": req.topic_id,
+            "topic_ids": topic_ids_key,
             "content_type": req.content_type,
             "reference_document_id": ref_ids[0],
             "payload": questions,
             "generated_at": generated_at,
+            "questions_pdf_key": questions_pdf_key,
+            "answer_key_pdf_key": answer_key_pdf_key,
         }).execute()
 
-        return {"cached": False, "questions": questions, "generatedAt": generated_at}
+        return {
+            "cached": False,
+            "questionCount": len(questions),
+            "generatedAt": generated_at,
+            "questionsPdfUrl": _presign_pdf_url(questions_pdf_key),
+            "answerKeyPdfUrl": _presign_pdf_url(answer_key_pdf_key),
+        }
     except HTTPException:
         raise
     except ClientError as exc:
@@ -1732,37 +1938,71 @@ class QueryRequest(BaseModel):
     topic_id: str
     question: str
     session_id: Optional[str] = None
+    # True only for the one-time "explain this topic from the ground up"
+    # request -- switches to generate_structured_explanation so the answer
+    # comes back pre-split into Continue-paced sections plus a topic-specific
+    # mastery-check question, instead of one plain-text blob. Every other
+    # call (a normal follow-up question) is unaffected.
+    full_explanation: bool = False
 
 
 @app.post("/query")
 async def query_content(req: QueryRequest):
+    # Temporary timing breakdown -- a request to this endpoint took 82s in
+    # production with no indication of which step was slow (no retry/backoff
+    # path exists here, so the delay has to be one of these calls itself
+    # hanging). Remove once the slow step is identified.
+    t0 = time.perf_counter()
     try:
         session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
+        t1 = time.perf_counter()
         chunks = await retrieve_context(req.question, topic_id=req.topic_id, course_id=req.course_id)
+        t2 = time.perf_counter()
+        print(f"      /query timing -- get_or_create_session={t1 - t0:.2f}s retrieve_context={t2 - t1:.2f}s")
 
+        check_question = None
+        solve_steps = None
         try:
-            raw_answer = generate_answer(req.question, chunks, gemini_client)
+            if req.full_explanation:
+                structured = generate_structured_explanation(req.question, chunks, gemini_client)
+                if structured == NO_CONTEXT_ANSWER:
+                    raw_answer = NO_CONTEXT_ANSWER
+                else:
+                    raw_answer = "\n\n".join(f"### {s['heading']}\n\n{s['body']}" for s in structured["sections"])
+                    check_question = structured["checkQuestion"]
+                    solve_steps = structured["solveSteps"]
+            else:
+                raw_answer = generate_answer(req.question, chunks, gemini_client)
+            print(f"      /query timing -- generate_answer={time.perf_counter() - t2:.2f}s")
         except AnswerGenerationError as exc:
-            # generate_answer() (answer_generation.py) catches every exception
-            # from its own Gemini call -- including a 429 -- and re-wraps it
-            # as a generic AnswerGenerationError, same as every other endpoint
-            # used to do before this session's quota-handling fix. The
+            # generate_answer()/generate_structured_explanation() (answer_generation.py)
+            # catch every exception from their own Gemini call -- including a 429 --
+            # and re-wrap it as a generic AnswerGenerationError, same as every other
+            # endpoint used to do before this session's quota-handling fix. The
             # original ClientError survives as __cause__, so unwrap it here
             # rather than always answering 502.
             if isinstance(exc.__cause__, ClientError) and exc.__cause__.code == 429:
                 raise HTTPException(status_code=429, detail="Gemini quota exceeded for today -- try again later") from exc
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+        t3 = time.perf_counter()
         if raw_answer == NO_CONTEXT_ANSWER or not chunks:
             append_session_message(session_id, "student", req.question)
             append_session_message(session_id, "ai", raw_answer, metadata={"tag": "Grounded Explanation", "citations": []})
-            return {"sessionId": session_id, "answer": raw_answer, "citations": []}
+            print(f"      /query timing -- append_messages={time.perf_counter() - t3:.2f}s total={time.perf_counter() - t0:.2f}s")
+            return {"sessionId": session_id, "answer": raw_answer, "citations": [], "checkQuestion": None, "solveSteps": None}
 
         answer, citations = renumber_inline_citations(raw_answer, chunks)
 
+        metadata = {"tag": "Grounded Explanation", "citations": citations}
+        if check_question:
+            metadata["checkQuestion"] = check_question
+        if solve_steps:
+            metadata["solveSteps"] = solve_steps
         append_session_message(session_id, "student", req.question)
-        append_session_message(session_id, "ai", answer, metadata={"tag": "Grounded Explanation", "citations": citations})
-        return {"sessionId": session_id, "answer": answer, "citations": citations}
+        append_session_message(session_id, "ai", answer, metadata=metadata)
+        print(f"      /query timing -- append_messages={time.perf_counter() - t3:.2f}s total={time.perf_counter() - t0:.2f}s")
+        return {"sessionId": session_id, "answer": answer, "citations": citations, "checkQuestion": check_question, "solveSteps": solve_steps}
     except HTTPException:
         raise
     except Exception as exc:

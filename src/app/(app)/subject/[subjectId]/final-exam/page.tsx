@@ -1,15 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useTutorStore } from "@/lib/store";
 import { getSession } from "@/lib/session";
 import AppHeader from "@/components/AppHeader";
 import { ArrowIcon, RefreshIcon } from "@/components/icons";
-import styles from "../page.module.css";
-
-type ContentType = "practice_assignment" | "quiz";
+import styles from "./page.module.css";
 
 interface GenerateResult {
   questionCount: number;
@@ -18,16 +16,10 @@ interface GenerateResult {
   answerKeyPdfUrl: string;
 }
 
-export default function PracticePage() {
-  const params = useParams<{ subjectId: string; topicId: string }>();
-  const searchParams = useSearchParams();
-  const contentType: ContentType = searchParams.get("type") === "quiz" ? "quiz" : "practice_assignment";
-  const topicsParam = searchParams.get("topics");
-  const topicIds = topicsParam ? topicsParam.split(",").filter(Boolean) : [];
-
+export default function FinalExamPage() {
+  const params = useParams<{ subjectId: string }>();
   const { subjects, userName, loading } = useTutorStore();
   const subject = subjects.find((s) => s.id === params.subjectId);
-  const topic = subject?.topics.find((t) => t.id === params.topicId);
 
   const [status, setStatus] = useState<"loading" | "ready" | "error" | "unavailable">("loading");
   const [result, setResult] = useState<GenerateResult | null>(null);
@@ -35,7 +27,7 @@ export default function PracticePage() {
   const [regenerating, setRegenerating] = useState(false);
 
   async function load(forceRegenerate: boolean) {
-    if (!topic) return;
+    if (!subject) return;
     setStatus("loading");
     const session = getSession();
     if (!session) {
@@ -47,11 +39,7 @@ export default function PracticePage() {
       const response = await fetch("/api/practice/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({
-          topicIds: contentType === "quiz" && topicIds.length > 0 ? topicIds : [topic.id],
-          contentType,
-          forceRegenerate,
-        }),
+        body: JSON.stringify({ courseId: subject.id, contentType: "final_exam", forceRegenerate }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Something went wrong");
@@ -75,17 +63,17 @@ export default function PracticePage() {
   useEffect(() => {
     queueMicrotask(() => load(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topic?.id, contentType, topicsParam]);
+  }, [subject?.id]);
 
   if (loading) {
     return <div className={`shell ${styles.page}`} />;
   }
 
-  if (!subject || !topic) {
+  if (!subject) {
     return (
       <div className={`shell ${styles.page}`}>
         <div className={styles.notFound}>
-          <p>Topic not found.</p>
+          <p>Subject not found.</p>
           <Link href="/dashboard">Back to dashboard</Link>
         </div>
       </div>
@@ -101,26 +89,23 @@ export default function PracticePage() {
   return (
     <div className={`shell ${styles.page}`}>
       <AppHeader
-        eyebrow={contentType === "quiz" ? "Quiz" : "Practice"}
-        title={topic.name}
+        eyebrow="Final Exam"
+        title={subject.name}
         userName={userName}
-        backHref={`/subject/${subject.id}/topic/${topic.id}`}
-        backLabel={topic.name}
+        backHref={`/subject/${subject.id}`}
+        backLabel={subject.name}
       />
 
       {status === "loading" && (
         <div className={styles.diagnoseCard}>
-          <p className={styles.diagnoseTag}>
-            {contentType === "quiz" ? "Building a fresh quiz…" : "Building a fresh practice set…"}
-          </p>
+          <p className={styles.diagnoseTag}>Building your final exam…</p>
         </div>
       )}
 
       {status === "unavailable" && (
         <div className={styles.diagnoseCard}>
           <h2 className={styles.diagnosePrompt}>
-            No instructor {contentType === "quiz" ? "quiz" : "practice assignment"} material is available for this
-            topic yet.
+            No instructor exam or quiz material is available for {subject.name} yet.
           </h2>
         </div>
       )}
@@ -135,7 +120,7 @@ export default function PracticePage() {
 
       {status === "ready" && result && (
         <div className={styles.diagnoseCard}>
-          <p className={styles.diagnoseTag}>{contentType === "quiz" ? "Quiz" : "Practice"} ready</p>
+          <p className={styles.diagnoseTag}>Final exam ready</p>
           <h2 className={styles.diagnosePrompt}>
             {result.questionCount} question{result.questionCount === 1 ? "" : "s"}, ready to download.
           </h2>
@@ -150,15 +135,15 @@ export default function PracticePage() {
             </a>
             <button type="button" className={styles.continueButton} onClick={handleRegenerate} disabled={regenerating}>
               <RefreshIcon size={14} />
-              {regenerating ? "Generating…" : "Generate a new set"}
+              {regenerating ? "Generating…" : "Generate a new exam"}
             </button>
           </div>
         </div>
       )}
 
       <div className={styles.continueRow}>
-        <Link href={`/subject/${subject.id}/topic/${topic.id}`} className={styles.continueButton}>
-          Back to {topic.name}
+        <Link href={`/subject/${subject.id}`} className={styles.continueButton}>
+          Back to {subject.name}
           <ArrowIcon size={14} />
         </Link>
       </div>

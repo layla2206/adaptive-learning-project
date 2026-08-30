@@ -58,8 +58,9 @@ export default function TutorMarkdown({
                 className={`${citeChipClassName} ${isOpen ? citeChipOpenClassName : ""}`}
                 onClick={() => onToggleCitation(key)}
                 aria-expanded={isOpen}
+                aria-label={`Citation ${citeMatch![1]}`}
               >
-                {mark}
+                {citeMatch![1]}
               </button>
             );
           }

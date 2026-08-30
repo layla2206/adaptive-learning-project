@@ -4,6 +4,7 @@ import {
   getTestStudentUserId,
   getTestStudentId,
   resetStudentProgressForTopic,
+  resetFinalExamContent,
   tagReferenceDocument,
   untagReferenceDocument,
   TEST_COURSE_ID,
@@ -41,7 +42,7 @@ test.describe("Practice assignment", () => {
     await untagReferenceDocument(refDocId);
   });
 
-  test("student can open, reveal, and regenerate a practice set from the mastered hub", async ({ page }) => {
+  test("student can open a practice set from the mastered hub and download both PDFs", async ({ page }) => {
     await seedSession(page, await getTestStudentUserId(), "student");
     await page.goto(`/subject/${TEST_COURSE_ID}/topic/${TEST_TOPIC_ID}`);
 
@@ -50,17 +51,16 @@ test.describe("Practice assignment", () => {
     await expect(practiceLink).toBeVisible();
     await practiceLink.click();
 
-    await expect(page.locator("text=Question 1 of")).toBeVisible({ timeout: 10000 });
-    await expect(page.locator("text=Mock practice question 1")).toBeVisible();
-
-    // No model answer visible until revealed.
-    await expect(page.locator("text=Model answer")).not.toBeVisible();
-    await page.getByRole("button", { name: "Reveal answer" }).first().click();
-    await expect(page.locator("text=Model answer").first()).toBeVisible();
-    await expect(page.getByRole("button", { name: "Hide answer" }).first()).toBeVisible();
+    await expect(page.locator("text=ready to download")).toBeVisible({ timeout: 20000 });
+    const questionsLink = page.getByRole("link", { name: "Download Questions (PDF)" });
+    const answerKeyLink = page.getByRole("link", { name: "Download Answer Key (PDF)" });
+    await expect(questionsLink).toBeVisible();
+    await expect(answerKeyLink).toBeVisible();
+    expect(await questionsLink.getAttribute("href")).toContain("questions");
+    expect(await answerKeyLink.getAttribute("href")).toContain("answer_key");
 
     await page.getByRole("button", { name: "Generate a new set" }).click();
-    await expect(page.locator("text=Question 1 of")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator("text=ready to download")).toBeVisible({ timeout: 20000 });
   });
 });
 
@@ -77,17 +77,48 @@ test.describe("Quiz", () => {
     await untagReferenceDocument(refDocId);
   });
 
-  test("student can open a quiz and reveal the correct option", async ({ page }) => {
+  test("student picks lectures for a quiz and downloads both PDFs", async ({ page }) => {
     await seedSession(page, await getTestStudentUserId(), "student");
     await page.goto(`/subject/${TEST_COURSE_ID}/topic/${TEST_TOPIC_ID}`);
-    await page.getByRole("link", { name: "Take a quiz" }).click();
+    // "Take a quiz" now opens an inline lecture-selection step (checkbox
+    // list of mastered lectures, current one pre-checked) before generating.
+    await page.getByRole("button", { name: "Take a quiz" }).click();
+    await expect(page.locator("text=Choose which lectures to include")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('input[type="checkbox"]').first()).toBeChecked();
 
-    await expect(page.locator("text=Question 1 of")).toBeVisible({ timeout: 10000 });
-    await expect(page.locator("text=Mock quiz Q1")).toBeVisible();
-    // Quiz options render as plain (non-clickable) spans -- no submission,
-    // just A/B/C/D text visible for every question.
-    await expect(page.locator("text=A").first()).toBeVisible();
-    await page.getByRole("button", { name: "Reveal answer" }).first().click();
+    await page.getByRole("link", { name: "Generate quiz" }).click();
+    await expect(page.locator("text=ready to download")).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("link", { name: "Download Questions (PDF)" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Download Answer Key (PDF)" })).toBeVisible();
+  });
+});
+
+test.describe("Final exam", () => {
+  let refDocId: string;
+  let studentId: string;
+
+  test.beforeEach(async () => {
+    studentId = await getTestStudentId();
+    await resetFinalExamContent(studentId);
+    // No 'exam'-tagged document exists on the seeded course -- tags a 'quiz'
+    // one instead, exercising final_exam's fallback-to-quiz-reference path
+    // (see backend/main.py's PRACTICE_CONTENT_SPECS "fallback_reference_document_type").
+    refDocId = await tagReferenceDocument(TEST_TOPIC_ID, "quiz");
+  });
+
+  test.afterEach(async () => {
+    await untagReferenceDocument(refDocId);
+    await resetFinalExamContent(studentId);
+  });
+
+  test("student can generate and download a final exam from the subject page", async ({ page }) => {
+    await seedSession(page, await getTestStudentUserId(), "student");
+    await page.goto(`/subject/${TEST_COURSE_ID}`);
+    await page.getByRole("link", { name: "Final exam" }).click();
+
+    await expect(page.locator("text=ready to download")).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("link", { name: "Download Questions (PDF)" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Download Answer Key (PDF)" })).toBeVisible();
   });
 });
 

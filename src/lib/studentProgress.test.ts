@@ -89,10 +89,16 @@ describe("computeTopics", () => {
     expect(topics.map((t) => t.state)).toEqual(["mastered", "in-progress", "locked"]);
   });
 
-  it("partial progress (mastery > 0, < 100) is in-progress but does NOT unlock the next topic", () => {
+  it("partial progress (mastery > 0, < 70) is in-progress but does NOT unlock the next topic", () => {
     const topics = computeTopics(topicRows, [{ topic_id: "t1", mastery_percent: 55, level: "Intermediate", weak_area: null }]);
     expect(topics.map((t) => t.state)).toEqual(["in-progress", "locked", "locked"]);
     expect(topics[0].progressPct).toBe(55);
+  });
+
+  it("a passed mastery check (70-99, not just exactly 100) counts as mastered and unlocks the next topic", () => {
+    const topics = computeTopics(topicRows, [{ topic_id: "t1", mastery_percent: 78, level: "Intermediate", weak_area: null }]);
+    expect(topics.map((t) => t.state)).toEqual(["mastered", "in-progress", "locked"]);
+    expect(topics[0].progressPct).toBe(100);
   });
 
   it("attaches each topic's own weakAreaTrend, not another topic's", () => {

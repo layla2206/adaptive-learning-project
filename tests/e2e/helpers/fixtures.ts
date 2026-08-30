@@ -149,7 +149,10 @@ export async function resetStudentProgressForTopic(topicId: string): Promise<voi
     db.from("sessions").delete().eq("student_id", studentId).eq("topic_id", topicId),
     db.from("xp_log").delete().eq("student_id", studentId).eq("topic_id", topicId),
     db.from("student_answers").delete().eq("student_id", studentId).eq("topic_id", topicId),
-    db.from("generated_practice_content").delete().eq("student_id", studentId).eq("topic_id", topicId),
+    // topic_ids (not topic_id) is the cache key column since the
+    // multi-lecture quiz / final_exam migration -- for a single-topic
+    // practice_assignment/quiz it's just that one topic_id.
+    db.from("generated_practice_content").delete().eq("student_id", studentId).eq("topic_ids", topicId),
   ]);
 }
 
@@ -173,6 +176,14 @@ export async function tagReferenceDocument(topicId: string, contentType: "practi
 
 export async function untagReferenceDocument(documentId: string): Promise<void> {
   await client().from("documents").update({ document_type: null }).eq("document_id", documentId);
+}
+
+/** final_exam's cache key is the whole course's topic_ids (not one topic),
+ *  so resetStudentProgressForTopic's single-topic delete can't clear it --
+ *  a standalone cleanup, scoped by content_type only, for specs that
+ *  exercise the final-exam entry point. */
+export async function resetFinalExamContent(studentId: string): Promise<void> {
+  await client().from("generated_practice_content").delete().eq("student_id", studentId).eq("content_type", "final_exam");
 }
 
 export async function getTestAdminId(): Promise<string> {

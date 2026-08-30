@@ -15,6 +15,8 @@ import {
   nextId,
   mapHistoryRowsToMessages,
   restoreFromHistory,
+  parseExplanationSections,
+  errorMessageFor,
   RETRY_TAGS,
   type Stage,
   type Message,
@@ -110,6 +112,46 @@ export default function TopicPage() {
   const [expandedCitations, setExpandedCitations] = useState<Set<string>>(new Set());
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [practiceAvailability, setPracticeAvailability] = useState<{ practiceAssignment: boolean; quiz: boolean } | null>(null);
+  const [quizSelecting, setQuizSelecting] = useState(false);
+  const [selectedQuizTopicIds, setSelectedQuizTopicIds] = useState<Set<string>>(new Set());
+  // Topic-specific mastery-check prompts generated alongside the ground-up
+  // explanation (see backend's generate_structured_explanation) -- fall back
+  // to the generic copy below when absent (older session, or the explain
+  // call failed and never produced them).
+  const [checkQuestion, setCheckQuestion] = useState<string | null>(null);
+  const [solveSteps, setSolveSteps] = useState<string[] | null>(null);
+  // Id of the currently-paced "Grounded Explanation" message, so the
+  // Continue-to-next-section control keeps tracking the right message even
+  // after the student asks an in-context follow-up question (which appends
+  // its own message, becoming the new "last" one).
+  const [pacedMessageId, setPacedMessageId] = useState<string | null>(null);
+  const [followUpInput, setFollowUpInput] = useState("");
+
+  // Practice/quiz generation only needs the topic to be reachable (not
+  // locked behind a prerequisite) -- unlike the mastered-hub stage below,
+  // this isn't gated on topic.state === "mastered", so it fetches on its
+  // own regardless of which stage the diagnose/explain flow is currently in.
+  useEffect(() => {
+    if (!topic || topic.state === "locked") return;
+    const topicId = topic.id;
+    let cancelled = false;
+    (async () => {
+      const session = getSession();
+      if (!session) return;
+      try {
+        const response = await fetch(`/api/practice/availability?topicId=${topicId}`, {
+          headers: { Authorization: `Bearer ${session.token}` },
+        });
+        const data = response.ok ? await response.json() : null;
+        if (!cancelled && data) setPracticeAvailability(data);
+      } catch {
+        /* buttons just stay hidden if this fails -- not critical */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [topic?.id, topic?.state]);
 
   useEffect(() => {
     if (!topic) return;
@@ -125,21 +167,10 @@ export default function TopicPage() {
     // fetch needed here at all -- "Review the explanation" loads that lazily,
     // on demand, only if the student actually asks for it.
     if (topic.state === "mastered") {
-      queueMicrotask(async () => {
+      queueMicrotask(() => {
         if (cancelled) return;
         setStage("mastered-hub");
         setDiagLoading(false);
-        const session = getSession();
-        if (!session) return;
-        try {
-          const response = await fetch(`/api/practice/availability?topicId=${topicId}`, {
-            headers: { Authorization: `Bearer ${session.token}` },
-          });
-          const data = response.ok ? await response.json() : null;
-          if (!cancelled && data) setPracticeAvailability(data);
-        } catch {
-          /* buttons just stay hidden if this fails -- not critical */
-        }
       });
       return () => {
         cancelled = true;
@@ -156,8 +187,8 @@ export default function TopicPage() {
         const data = await response.json();
         if (!response.ok || data.error) throw new Error(data.error || "Something went wrong");
         if (!cancelled) setDiagQuestions(data.questions ?? []);
-      } catch {
-        if (!cancelled) setDiagError("Couldn't load the diagnostic questions for this topic — try refreshing.");
+      } catch (err) {
+        if (!cancelled) setDiagError(errorMessageFor(err, "Couldn't load the diagnostic questions for this topic — try refreshing."));
       } finally {
         if (!cancelled) setDiagLoading(false);
       }
@@ -178,8 +209,8 @@ export default function TopicPage() {
           setFoundationsTotal(data.questions?.length ?? 0);
           setStage("foundations-question");
         }
-      } catch {
-        if (!cancelled) setDiagError("Couldn't load the foundations check for this topic — try refreshing.");
+      } catch (err) {
+        if (!cancelled) setDiagError(errorMessageFor(err, "Couldn't load the foundations check for this topic — try refreshing."));
       } finally {
         if (!cancelled) setDiagLoading(false);
       }
@@ -213,6 +244,8 @@ export default function TopicPage() {
             setFoundationsExplanation(restored.foundationsExplanation ?? null);
             setFoundationsPendingIndex(restored.foundationsPendingIndex ?? null);
             setFoundationsTotal(restored.foundationsTotal ?? 0);
+            setCheckQuestion(restored.checkQuestion ?? null);
+            setSolveSteps(restored.solveSteps ?? null);
             setDiagLoading(false);
             return;
           }
@@ -247,8 +280,21 @@ export default function TopicPage() {
     );
   }
 
-  function pushMessage(msg: Omit<Message, "id">) {
-    setMessages((prev) => [...prev, { ...msg, id: nextId() }]);
+  function pushMessage(msg: Omit<Message, "id">): string {
+    const id = nextId();
+    setMessages((prev) => [...prev, { ...msg, id }]);
+    return id;
+  }
+
+  /** Advances a paced explanation message to reveal its next section. */
+  function revealNextSection(messageId: string) {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId && m.sections
+          ? { ...m, revealedCount: Math.min((m.revealedCount ?? 0) + 1, m.sections.length) }
+          : m
+      )
+    );
   }
 
   function toggleCitation(key: string) {
@@ -279,6 +325,21 @@ export default function TopicPage() {
   function handleBackToHub() {
     setMessages([]);
     setStage("mastered-hub");
+  }
+
+  function handleOpenQuizSelection() {
+    if (!topic) return;
+    setSelectedQuizTopicIds(new Set([topic.id]));
+    setQuizSelecting(true);
+  }
+
+  function toggleQuizTopic(id: string) {
+    setSelectedQuizTopicIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   function handleDiagnoseSelect(option: string) {
@@ -336,25 +397,65 @@ export default function TopicPage() {
           topicId: topic.id,
           question: `Explain ${topic.name} from the ground up, starting from the fundamentals.`,
           sessionId: sessionId ?? undefined,
+          fullExplanation: true,
         }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Something went wrong");
 
       if (data.sessionId) setSessionId(data.sessionId);
+      setCheckQuestion(data.checkQuestion ?? null);
+      setSolveSteps(data.solveSteps ?? null);
+
+      const sections = parseExplanationSections(data.answer ?? "");
+      const messageId = pushMessage(
+        sections.length
+          ? { role: "tutor", tag: "Grounded Explanation", paragraphs: [], citations: data.citations, sections, revealedCount: 1 }
+          : { role: "tutor", tag: "Grounded Explanation", paragraphs: [data.answer], citations: data.citations }
+      );
+      setPacedMessageId(sections.length ? messageId : null);
+    } catch (err) {
       pushMessage({
         role: "tutor",
-        tag: "Grounded Explanation",
-        paragraphs: [data.answer],
-        citations: data.citations,
-      });
-    } catch {
-      pushMessage({
-        role: "tutor",
-        paragraphs: ["Something went wrong getting an explanation for this topic — try again in a moment."],
+        paragraphs: [errorMessageFor(err, "Something went wrong getting an explanation for this topic — try again in a moment.")],
       });
     } finally {
       setStage("explain-shown");
+    }
+  }
+
+  /** In-context question during a paced explanation -- reuses the normal
+   * ask flow (a plain, non-sectioned /query answer) without touching the
+   * paced message's reveal state or the current stage. */
+  async function handleAskFollowUp() {
+    if (!topic || !subject || !followUpInput.trim()) return;
+    const question = followUpInput.trim();
+    setFollowUpInput("");
+    pushMessage({ role: "user", paragraphs: [question] });
+
+    const session = getSession();
+    if (!session) {
+      pushMessage({ role: "tutor", paragraphs: ["You'll need to be signed in to ask that — try refreshing."] });
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          courseId: subject.id,
+          topicId: topic.id,
+          question,
+          sessionId: sessionId ?? undefined,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Something went wrong");
+      if (data.sessionId) setSessionId(data.sessionId);
+      pushMessage({ role: "tutor", tag: "Grounded Explanation", paragraphs: [data.answer], citations: data.citations });
+    } catch (err) {
+      pushMessage({ role: "tutor", paragraphs: [errorMessageFor(err, "Something went wrong answering that — try again in a moment.")] });
     }
   }
 
@@ -399,8 +500,8 @@ export default function TopicPage() {
       setFoundationsExplanation(data.explanation);
       setFoundationsPendingIndex(question.concept_index);
       setStage("foundations-explain");
-    } catch {
-      setDiagError("Something went wrong checking that — try again in a moment.");
+    } catch (err) {
+      setDiagError(errorMessageFor(err, "Something went wrong checking that — try again in a moment."));
       setStage("foundations-question");
     }
   }
@@ -447,7 +548,8 @@ export default function TopicPage() {
       role: "tutor",
       tag: "Mastery Check",
       paragraphs: [
-        `Your turn — walk me through ${topic.name} in your own words, like you're explaining it to someone who's never seen it. Be specific about the "why," not just the "what."`,
+        checkQuestion ??
+          `Your turn — walk me through ${topic.name} in your own words, like you're explaining it to someone who's never seen it. Be specific about the "why," not just the "what."`,
       ],
     });
     setStage("check-ask");
@@ -533,8 +635,8 @@ export default function TopicPage() {
         });
       }
       setStage("retry-shown");
-    } catch {
-      pushMessage({ role: "tutor", paragraphs: ["Something went wrong checking that — try again in a moment."] });
+    } catch (err) {
+      pushMessage({ role: "tutor", paragraphs: [errorMessageFor(err, "Something went wrong checking that — try again in a moment.")] });
       setStage("check-ask");
     }
   }
@@ -585,8 +687,8 @@ export default function TopicPage() {
         announceMastery(subject.id, topic.id);
       }
       setStage("done");
-    } catch {
-      pushMessage({ role: "tutor", paragraphs: ["Something went wrong checking that — try again in a moment."] });
+    } catch (err) {
+      pushMessage({ role: "tutor", paragraphs: [errorMessageFor(err, "Something went wrong checking that — try again in a moment.")] });
       setStage("retry-check-ask");
     }
   }
@@ -615,6 +717,63 @@ export default function TopicPage() {
           <div className={styles.progressFill} style={{ width: `${topic.progressPct}%` }} />
         </div>
       </div>
+
+      {topic.state !== "locked" &&
+        stage !== "mastered-hub" &&
+        (practiceAvailability?.practiceAssignment || practiceAvailability?.quiz) && (
+          <div className={styles.practiceToolsRow}>
+            {practiceAvailability?.practiceAssignment && (
+              <Link
+                href={`/subject/${subject.id}/topic/${topic.id}/practice?type=practice_assignment`}
+                className={styles.practiceToolsLink}
+              >
+                Practice this lecture
+              </Link>
+            )}
+            {practiceAvailability?.quiz && (
+              <button type="button" className={styles.practiceToolsLink} onClick={handleOpenQuizSelection}>
+                Take a quiz
+              </button>
+            )}
+          </div>
+        )}
+
+      {quizSelecting && (
+        <div className={styles.modalBackdrop} onClick={() => setQuizSelecting(false)}>
+          <div className={`${styles.diagnoseCard} ${styles.modalCard}`} onClick={(e) => e.stopPropagation()}>
+            <p className={styles.diagnoseTag}>Quiz</p>
+            <h2 className={styles.diagnosePrompt}>Choose which lectures to include</h2>
+            <div className={styles.quizLectureList}>
+              {subject.topics
+                .filter((t) => t.state !== "locked")
+                .map((t) => (
+                  <label key={t.id} className={styles.quizLectureOption}>
+                    <input type="checkbox" checked={selectedQuizTopicIds.has(t.id)} onChange={() => toggleQuizTopic(t.id)} />
+                    {t.name}
+                  </label>
+                ))}
+            </div>
+            <div className={styles.continueRow}>
+              {selectedQuizTopicIds.size > 0 ? (
+                <Link
+                  href={`/subject/${subject.id}/topic/${topic.id}/practice?type=quiz&topics=${[...selectedQuizTopicIds].join(",")}`}
+                  className={styles.continueButton}
+                >
+                  Generate quiz
+                  <ArrowIcon size={14} />
+                </Link>
+              ) : (
+                <span className={styles.continueButton} aria-disabled="true" style={{ opacity: 0.5 }}>
+                  Select at least one lecture
+                </span>
+              )}
+              <button type="button" className={styles.continueButton} onClick={() => setQuizSelecting(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {stage === "diagnose" && (
         <div className={styles.diagnoseCard}>
@@ -755,22 +914,37 @@ export default function TopicPage() {
                 </div>
               )}
               {m.diagram && <MermaidDiagram code={m.diagram} />}
-              {m.paragraphs.map((p, i) =>
-                m.role === "tutor" ? (
-                  <TutorMarkdown
-                    key={i}
-                    text={p}
-                    citations={m.citations}
-                    messageId={m.id}
-                    expandedCitations={expandedCitations}
-                    onToggleCitation={toggleCitation}
-                    citeChipClassName={styles.citeChip}
-                    citeChipOpenClassName={styles.citeChipOpen}
-                  />
-                ) : (
-                  <p key={i}>{p}</p>
-                )
-              )}
+              {m.sections
+                ? m.sections.slice(0, m.revealedCount ?? m.sections.length).map((s, i) => (
+                    <div key={i} className={styles.explanationSection}>
+                      <h3 className={styles.explanationHeading}>{s.heading}</h3>
+                      <TutorMarkdown
+                        text={s.body}
+                        citations={m.citations}
+                        messageId={m.id}
+                        expandedCitations={expandedCitations}
+                        onToggleCitation={toggleCitation}
+                        citeChipClassName={styles.citeChip}
+                        citeChipOpenClassName={styles.citeChipOpen}
+                      />
+                    </div>
+                  ))
+                : m.paragraphs.map((p, i) =>
+                    m.role === "tutor" ? (
+                      <TutorMarkdown
+                        key={i}
+                        text={p}
+                        citations={m.citations}
+                        messageId={m.id}
+                        expandedCitations={expandedCitations}
+                        onToggleCitation={toggleCitation}
+                        citeChipClassName={styles.citeChip}
+                        citeChipOpenClassName={styles.citeChipOpen}
+                      />
+                    ) : (
+                      <p key={i}>{p}</p>
+                    )
+                  )}
               {m.citations
                 ?.filter((c) => expandedCitations.has(`${m.id}:${c.mark}`))
                 .map((c) => (
@@ -792,14 +966,47 @@ export default function TopicPage() {
         )}
       </div>
 
-      {stage === "explain-shown" && (
-        <div className={styles.continueRow}>
-          <button type="button" className={styles.continueButton} onClick={handleContinueToCheck}>
-            I understand — check me
-            <ArrowIcon size={14} />
-          </button>
-        </div>
-      )}
+      {stage === "explain-shown" && (() => {
+        const pacedMessage = pacedMessageId ? messages.find((m) => m.id === pacedMessageId) : undefined;
+        const isPacing = !!pacedMessage?.sections && (pacedMessage.revealedCount ?? 0) < pacedMessage.sections.length;
+
+        if (isPacing) {
+          const currentHeading = pacedMessage!.sections![(pacedMessage!.revealedCount ?? 1) - 1]?.heading;
+          return (
+            <>
+              <div className={styles.composer}>
+                <textarea
+                  value={followUpInput}
+                  onChange={(e) => setFollowUpInput(e.target.value)}
+                  placeholder={currentHeading ? `Ask a question about "${currentHeading}"...` : "Ask a question..."}
+                />
+                <div className={styles.composerFoot}>
+                  <span className={styles.composerHint}>Optional — ask about what you just read</span>
+                  <button type="button" className={styles.continueButton} onClick={handleAskFollowUp} disabled={!followUpInput.trim()}>
+                    Ask
+                    <ArrowIcon size={14} />
+                  </button>
+                </div>
+              </div>
+              <div className={styles.continueRow}>
+                <button type="button" className={styles.continueButton} onClick={() => revealNextSection(pacedMessageId!)}>
+                  Continue
+                  <ArrowIcon size={14} />
+                </button>
+              </div>
+            </>
+          );
+        }
+
+        return (
+          <div className={styles.continueRow}>
+            <button type="button" className={styles.continueButton} onClick={handleContinueToCheck}>
+              I understand — check me
+              <ArrowIcon size={14} />
+            </button>
+          </div>
+        );
+      })()}
 
       {stage === "retry-shown" && (
         <>
@@ -845,7 +1052,7 @@ export default function TopicPage() {
 
       {stage === "retry-check-ask" && (
         <div className={styles.composer}>
-          {STEP_PROMPTS.map((label, i) => (
+          {(solveSteps ?? STEP_PROMPTS).map((label, i) => (
             <div key={i} className={styles.stepInputRow}>
               <label className={styles.stepInputLabel}>
                 Step {i + 1} — {label}
@@ -915,10 +1122,10 @@ export default function TopicPage() {
               </Link>
             )}
             {practiceAvailability?.quiz && (
-              <Link href={`/subject/${subject.id}/topic/${topic.id}/practice?type=quiz`} className={styles.continueButton}>
+              <button type="button" className={styles.continueButton} onClick={handleOpenQuizSelection}>
                 Take a quiz
                 <ArrowIcon size={14} />
-              </Link>
+              </button>
             )}
             <Link href={`/subject/${subject.id}/topic/${topic.id}/peer-buddy`} className={styles.continueButton}>
               Explain it to a friend

@@ -66,6 +66,13 @@ export function computeWeakAreaTrends(
   return trendByTopic;
 }
 
+// Must match backend/main.py's MASTERY_PASS_THRESHOLD — that's the score a
+// mastery check has to clear to be recorded as `passed`, and mastery_percent
+// is stored as the raw score (e.g. 78), not clamped to 100 on a pass. Gating
+// "mastered" here on an exact 100 meant a real pass (70-99) still rendered
+// as in-progress and never unlocked the next topic.
+export const MASTERY_PASS_THRESHOLD = 70;
+
 /**
  * Derives each topic's locked/in-progress/mastered state from real
  * student_profiles rows. A brand-new student has no rows at all, so only
@@ -92,7 +99,7 @@ export function computeTopics(
     let state: TopicState;
     let progressPct: number;
 
-    if (mastery !== undefined && mastery >= 100) {
+    if (mastery !== undefined && mastery >= MASTERY_PASS_THRESHOLD) {
       state = "mastered";
       progressPct = 100;
     } else if (mastery !== undefined && mastery > 0) {

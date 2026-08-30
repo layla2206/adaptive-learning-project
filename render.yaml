@@ -1,0 +1,36 @@
+# Render Blueprint for the FastAPI backend. Docker-based (not Render's
+# native Python runtime) so WeasyPrint's system libraries (Pango/cairo/
+# gdk-pixbuf) install reliably -- see backend/Dockerfile's own comment.
+#
+# Every envVar below is `sync: false`, meaning Render will prompt for a real
+# value in its dashboard rather than reading one from this file -- no secret
+# is ever committed here. ALLOWED_ORIGINS should be set to the deployed
+# Vercel URL (e.g. https://your-app.vercel.app) once it's known; until then
+# it falls back to http://localhost:3000 (see main.py).
+services:
+  - type: web
+    name: adaptive-tutor-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: CLOUDFLARE_R2_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_R2_ACCESS_KEY_ID
+        sync: false
+      - key: CLOUDFLARE_R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: CLOUDFLARE_R2_BUCKET_NAME
+        sync: false
+      - key: CLOUDFLARE_R2_ENDPOINT
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false

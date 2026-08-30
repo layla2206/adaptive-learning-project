@@ -464,6 +464,7 @@ export default function CourseUploadPage() {
                 <option value="">Type: none</option>
                 <option value="practice_assignment">Practice Assignment</option>
                 <option value="quiz">Quiz</option>
+                <option value="exam">Exam</option>
               </select>
               <button type="button" className={styles.retagSave} onClick={handleConfirmRetag}>
                 Save
@@ -476,7 +477,11 @@ export default function CourseUploadPage() {
             <p className={styles.rowMeta}>
               Lecture {file.lectureNumber} · {file.uploadedAt} ·{" "}
               {file.topicId ? (topicNameById.get(file.topicId) ?? "Unknown topic") : "Untagged"}
-              {file.documentType ? ` · ${file.documentType === "quiz" ? "Quiz" : "Practice Assignment"}` : ""}
+              {file.documentType
+                ? ` · ${
+                    file.documentType === "quiz" ? "Quiz" : file.documentType === "exam" ? "Exam" : "Practice Assignment"
+                  }`
+                : ""}
             </p>
           )}
         </div>
