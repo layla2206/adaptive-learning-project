@@ -31,7 +31,7 @@ We use a standard Python virtual environment.
      - **Embeddings**: 100 requests per minute **and** 1,000 requests per day (we use `gemini-embedding-001`). The daily cap is the one that actually blocks work in practice — it's shared across the whole project, so a burst of testing early in the day can exhaust it long before you'd expect from the per-minute number alone.
    
    **RAG Configuration**:
-   - `RAG_SIMILARITY_THRESHOLD`: Default is `0.7`. Controls how strict cosine similarity filtering is during document chunk retrieval.
+   - `RAG_SIMILARITY_THRESHOLD`: Default is `0.6`. Controls how strict cosine similarity filtering is during document chunk retrieval.
 
 ## Running the Server
 

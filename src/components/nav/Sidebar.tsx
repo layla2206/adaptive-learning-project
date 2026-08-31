@@ -43,7 +43,7 @@ export default function Sidebar() {
   return (
     <aside className={styles.sidebar}>
       <Link href={homeHref} className={styles.logo}>
-        Tutor
+        Bridge
       </Link>
 
       <nav className={styles.nav}>

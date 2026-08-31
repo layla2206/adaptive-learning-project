@@ -3,13 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatEyebrowDate, initials, greetingForHour } from "@/lib/utils";
 import { getSession } from "@/lib/session";
-import type { Course, StuckTopic } from "@/lib/instructorData";
+import type { Course, StuckTopic, TopicBreakdown } from "@/lib/instructorData";
 import Card from "@/components/Card";
 import ArrowButton from "@/components/ArrowButton";
 import ProgressRing from "@/components/ProgressRing";
 import MasteryBar from "@/components/MasteryBar";
 import StatsStrip, { StatsStripSkeleton, type Stat } from "@/components/StatsStrip";
 import StuckTable from "@/components/instructor/StuckTable";
+import TopicSubideasTable from "@/components/instructor/TopicSubideasTable";
 import CardSkeleton from "@/components/CardSkeleton";
 import Skeleton from "@/components/Skeleton";
 import { UploadIcon, UsersIcon } from "@/components/icons";
@@ -20,6 +21,7 @@ interface InstructorDashboard {
   stats: Stat[];
   courses: Course[];
   stuckTopicsByCourse: Record<string, StuckTopic[]>;
+  topicsByCourse: Record<string, TopicBreakdown[]>;
 }
 
 export default function InstructorDashboardPage() {
@@ -45,6 +47,7 @@ export default function InstructorDashboardPage() {
   const stats = dashboard?.stats ?? [];
   const courses = dashboard?.courses ?? [];
   const stuckTopicsByCourse = dashboard?.stuckTopicsByCourse ?? {};
+  const topicsByCourse = dashboard?.topicsByCourse ?? {};
 
   function handleInsightGenerated(topicId: string, suggestion: { text: string; generatedAt: string }) {
     setDashboard((prev) => {
@@ -156,6 +159,11 @@ export default function InstructorDashboardPage() {
           onInsightGenerated={handleInsightGenerated}
         />
       )}
+
+      <div className={styles.sectionHead}>
+        <h2>Topics &amp; Sub-Ideas</h2>
+      </div>
+      {courses.length > 0 && <TopicSubideasTable courses={courses} topicsByCourse={topicsByCourse} />}
     </div>
   );
 }

@@ -58,7 +58,7 @@ function VerifyEmailInner() {
     <div className={styles.page}>
       <div className={styles.card}>
         <Link href="/" className={styles.logo}>
-          Tutor
+          Bridge
         </Link>
         {status === "verifying" && (
           <>

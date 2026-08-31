@@ -47,6 +47,8 @@ export async function POST(req: NextRequest) {
         question: body.question,
         session_id: typeof body.sessionId === "string" ? body.sessionId : undefined,
         full_explanation: body.fullExplanation === true,
+        subidea_id: typeof body.subideaId === "string" ? body.subideaId : undefined,
+        current_section_text: typeof body.currentSectionText === "string" ? body.currentSectionText : undefined,
       }),
     });
     const data = await response.json();

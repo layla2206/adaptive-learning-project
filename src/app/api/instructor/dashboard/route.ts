@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 import { getCurrentUser } from "@/lib/authMiddleware";
-import type { StuckSeverity, StuckTopic } from "@/lib/instructorData";
+import type { StuckSeverity, StuckTopic, TopicBreakdown } from "@/lib/instructorData";
 import { computeStuckCohort, computeMistakeBreakdown } from "@/lib/instructorInsights";
+import { buildSubideaSignals } from "@/lib/subideaInsights";
 
 function severityFor(stuckCount: number): StuckSeverity {
   if (stuckCount >= 15) return "high";
@@ -49,6 +50,7 @@ export async function GET(req: NextRequest) {
       ],
       courses: [],
       stuckTopicsByCourse: {},
+      topicsByCourse: {},
     });
   }
 
@@ -61,7 +63,15 @@ export async function GET(req: NextRequest) {
   const topicIds = (topicRows ?? []).map((t) => t.topic_id);
   const allStudentIds = Array.from(new Set((enrollmentRows ?? []).map((e) => e.student_id)));
 
-  const [{ data: profileRows }, { data: retryRows }, { data: answerRows }, { data: suggestionRows }] = await Promise.all([
+  const [
+    { data: profileRows },
+    { data: retryRows },
+    { data: answerRows },
+    { data: suggestionRows },
+    { data: subideaRows },
+    { data: subideaCheckRows },
+    { data: masteryLoopSessions },
+  ] = await Promise.all([
     topicIds.length
       ? supabase.from("student_profiles").select("student_id, topic_id, mastery_percent").in("topic_id", topicIds)
       : Promise.resolve({ data: [] as { student_id: string; topic_id: string; mastery_percent: number }[] }),
@@ -74,10 +84,50 @@ export async function GET(req: NextRequest) {
     topicIds.length
       ? supabase.from("instructor_topic_suggestions").select("topic_id, suggestion_text, generated_at").in("topic_id", topicIds)
       : Promise.resolve({ data: [] as { topic_id: string; suggestion_text: string; generated_at: string }[] }),
+    topicIds.length
+      ? supabase.from("topic_subideas").select("subidea_id, topic_id, idea_index, label").in("topic_id", topicIds)
+      : Promise.resolve({ data: [] as { subidea_id: string; topic_id: string; idea_index: number; label: string }[] }),
+    // Now genuinely per-sub-idea (subidea_id set on every row once a topic
+    // has a breakdown) -- filtered to non-null so topics without one yet
+    // don't pollute the aggregation below.
+    topicIds.length
+      ? supabase
+          .from("mastery_checks")
+          .select("student_id, topic_id, subidea_id, overall_mastery, passed, solve_score")
+          .in("topic_id", topicIds)
+          .not("subidea_id", "is", null)
+      : Promise.resolve({
+          data: [] as { student_id: string; topic_id: string; subidea_id: string; overall_mastery: number; passed: boolean; solve_score: number | null }[],
+        }),
+    // Follow-up tagging lives on session_messages, which has no topic_id
+    // column of its own -- resolved via the owning (mastery-loop) session.
+    topicIds.length
+      ? supabase.from("sessions").select("session_id, topic_id").in("topic_id", topicIds).eq("session_type", "mastery_loop")
+      : Promise.resolve({ data: [] as { session_id: string; topic_id: string }[] }),
   ]);
   const suggestionByTopic = new Map(
     (suggestionRows ?? []).map((s) => [s.topic_id, { text: s.suggestion_text, generatedAt: s.generated_at }])
   );
+  const subideasByTopic = new Map<string, { subidea_id: string; label: string; idea_index: number }[]>();
+  for (const s of subideaRows ?? []) {
+    const list = subideasByTopic.get(s.topic_id) ?? [];
+    list.push({ subidea_id: s.subidea_id, label: s.label, idea_index: s.idea_index });
+    subideasByTopic.set(s.topic_id, list);
+  }
+  for (const list of subideasByTopic.values()) list.sort((a, b) => a.idea_index - b.idea_index);
+
+  const topicBySessionId = new Map((masteryLoopSessions ?? []).map((s) => [s.session_id, s.topic_id]));
+  const sessionIds = Array.from(topicBySessionId.keys());
+  const { data: followUpMessageRows } = sessionIds.length
+    ? await supabase
+        .from("session_messages")
+        .select("session_id, metadata")
+        .in("session_id", sessionIds)
+        .eq("sender", "ai")
+    : { data: [] as { session_id: string; metadata: { isFollowUp?: boolean; subideaId?: string | null } | null }[] };
+  const followUpRows = (followUpMessageRows ?? [])
+    .filter((m) => m.metadata?.isFollowUp === true)
+    .map((m) => ({ topic_id: topicBySessionId.get(m.session_id) ?? "", subidea_id: m.metadata?.subideaId ?? null }));
 
   const courses = (courseRows ?? []).map((course) => {
     const courseTopicIds = new Set((topicRows ?? []).filter((t) => t.course_id === course.course_id).map((t) => t.topic_id));
@@ -111,6 +161,12 @@ export async function GET(req: NextRequest) {
       if (stuckStudentIds.length === 0) continue;
 
       const mistakeBreakdown = computeMistakeBreakdown(topic.topic_id, stuckStudentIds, answerRows ?? []);
+      const subideaSignals = buildSubideaSignals(
+        topic.topic_id,
+        subideasByTopic.get(topic.topic_id) ?? [],
+        subideaCheckRows ?? [],
+        followUpRows
+      );
       rows.push({
         topic: topic.topic_name,
         topicId: topic.topic_id,
@@ -119,9 +175,29 @@ export async function GET(req: NextRequest) {
         avgRetries,
         mistakeBreakdown,
         suggestion: suggestionByTopic.get(topic.topic_id) ?? null,
+        subideaSignals,
       });
     }
     stuckTopicsByCourse[course.course_id] = rows.sort((a, b) => b.stuckCount - a.stuckCount);
+  }
+
+  // Every topic, not just ones with a stuck cohort -- lets an instructor see
+  // a topic's sub-idea breakdown/insights the moment any data exists for it
+  // (e.g. while testing one topic in isolation), without waiting for 2+
+  // students to retry and stay unmastered first.
+  const topicsByCourse: Record<string, TopicBreakdown[]> = {};
+  for (const course of courseRows ?? []) {
+    const courseTopics = (topicRows ?? []).filter((t) => t.course_id === course.course_id);
+    topicsByCourse[course.course_id] = courseTopics.map((topic) => ({
+      topic: topic.topic_name,
+      topicId: topic.topic_id,
+      subideaSignals: buildSubideaSignals(
+        topic.topic_id,
+        subideasByTopic.get(topic.topic_id) ?? [],
+        subideaCheckRows ?? [],
+        followUpRows
+      ),
+    }));
   }
 
   const totalMasteryRows = profileRows ?? [];
@@ -139,5 +215,6 @@ export async function GET(req: NextRequest) {
     ],
     courses,
     stuckTopicsByCourse,
+    topicsByCourse,
   });
 }

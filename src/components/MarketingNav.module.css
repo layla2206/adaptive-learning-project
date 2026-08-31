@@ -22,26 +22,6 @@
   gap: 18px;
 }
 
-.personaLinks {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding-right: 4px;
-}
-
-.personaLink {
-  font-family: var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: 0.66rem;
-  color: var(--ink-faint);
-  transition: color 0.2s ease;
-}
-
-.personaLink:hover {
-  color: var(--ink-soft);
-}
-
 .signIn {
   font-family: var(--font-mono);
   text-transform: uppercase;
@@ -74,8 +54,3 @@
   background: var(--plum-deep);
 }
 
-@media (max-width: 560px) {
-  .personaLinks {
-    display: none;
-  }
-}

@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   restoreFromHistory,
   mapHistoryRowsToMessages,
-  parseExplanationSections,
   errorMessageFor,
   QUOTA_ERROR_MESSAGE,
   type HistoryRow,
@@ -13,7 +12,7 @@ describe("restoreFromHistory", () => {
     expect(restoreFromHistory([])).toBeNull();
   });
 
-  it("returns null when the last message's tag isn't a resumable stage (falls back to a fresh diagnose)", () => {
+  it("returns null when the last message's tag isn't a resumable foundations stage (falls back to a fresh diagnose)", () => {
     const rows: HistoryRow[] = [{ text: "Nice work!", tag: "Result" }];
     expect(restoreFromHistory(rows)).toBeNull();
   });
@@ -23,34 +22,17 @@ describe("restoreFromHistory", () => {
     expect(restoreFromHistory(rows)).toBeNull();
   });
 
-  it("resumes into explain-shown after a Grounded Explanation", () => {
-    const rows: HistoryRow[] = [{ text: "Here's the explanation.", tag: "Grounded Explanation" }];
-    const result = restoreFromHistory(rows);
-    expect(result?.stage).toBe("explain-shown");
-    expect(result?.messages).toHaveLength(1);
-  });
-
-  it.each(["Worked Example", "Hands-on Task", "Analogy", "Diagram", "Mind Map"])(
-    "resumes into retry-shown after a %s retry message",
+  // The mastery loop itself (explain/check/hint/retry) no longer resumes
+  // through this function -- POST /topic/resume owns that now, reading
+  // backend/main.py's topic_progress table directly. These tags are just
+  // more chat history as far as restoreFromHistory is concerned.
+  it.each(["Grounded Explanation", "Worked Example", "Diagram", "Hint"])(
+    "returns null for a %s row -- no longer this function's concern",
     (tag) => {
-      const rows: HistoryRow[] = [{ text: "Retry content.", tag }];
-      expect(restoreFromHistory(rows)?.stage).toBe("retry-shown");
+      const rows: HistoryRow[] = [{ text: "some content", tag }];
+      expect(restoreFromHistory(rows)).toBeNull();
     }
   );
-
-  it("resumes into check-ask after a Hint", () => {
-    const rows: HistoryRow[] = [{ text: "feedback text", tag: "Hint", hintsUsed: 1, maxHints: 2 }];
-    expect(restoreFromHistory(rows)?.stage).toBe("check-ask");
-  });
-
-  it("converts every row to a message, not just the last one", () => {
-    const rows: HistoryRow[] = [
-      { text: "first", tag: "Grounded Explanation" },
-      { text: "second", tag: "Feedback" },
-      { text: "third", tag: "Grounded Explanation" },
-    ];
-    expect(restoreFromHistory(rows)?.messages).toHaveLength(3);
-  });
 
   describe("Foundations Gate resumption", () => {
     const fullFoundationsRow: HistoryRow = {
@@ -77,6 +59,15 @@ describe("restoreFromHistory", () => {
         options: ["A", "B", "C", "D"],
       });
       expect(result?.foundationsTotal).toBe(4);
+    });
+
+    it("converts every row to a message, not just the last one", () => {
+      const rows: HistoryRow[] = [
+        { text: "first", tag: "Foundations Explanation", conceptIndex: 0 },
+        { text: "second", tag: "Foundations Question" },
+        fullFoundationsRow,
+      ];
+      expect(restoreFromHistory(rows)?.messages).toHaveLength(3);
     });
 
     it("concept_index 0 (the first concept) is NOT treated as missing -- a falsy-value bug this code explicitly guards against with `!== undefined`", () => {
@@ -158,78 +149,14 @@ describe("mapHistoryRowsToMessages", () => {
     expect(first.id).not.toBe(second.id);
   });
 
-  it("a multi-section explanation gets sections and paragraphs is empty, fully revealed", () => {
+  it("carries a sub-idea explanation's heading through, but not for a diagram row", () => {
     const rows: HistoryRow[] = [
-      { text: "### Motivation\n\nWhy this matters.\n\n### The Mechanism\n\nHow it works.", tag: "Grounded Explanation" },
+      { text: "Body text.", tag: "Grounded Explanation", heading: "Push and Pop" },
+      { text: "graph TD\nA-->B", tag: "Diagram", isDiagram: true, heading: "should be ignored" },
     ];
-    const [msg] = mapHistoryRowsToMessages(rows);
-    expect(msg.paragraphs).toEqual([]);
-    expect(msg.sections).toEqual([
-      { heading: "Motivation", body: "Why this matters." },
-      { heading: "The Mechanism", body: "How it works." },
-    ]);
-    expect(msg.revealedCount).toBe(2);
-  });
-
-  it("a single-heading answer (not a real multi-section explanation) stays a plain paragraph", () => {
-    const rows: HistoryRow[] = [{ text: "### Only One Heading\n\nJust one section.", tag: "Grounded Explanation" }];
-    const [msg] = mapHistoryRowsToMessages(rows);
-    expect(msg.sections).toBeUndefined();
-    expect(msg.paragraphs).toEqual(["### Only One Heading\n\nJust one section."]);
-  });
-});
-
-describe("parseExplanationSections", () => {
-  it("splits on ### heading boundaries into ordered {heading, body} pairs", () => {
-    const text = "### Motivation\n\nWhy this matters [1].\n\n### The Mechanism\n\nHow it works [2].";
-    expect(parseExplanationSections(text)).toEqual([
-      { heading: "Motivation", body: "Why this matters [1]." },
-      { heading: "The Mechanism", body: "How it works [2]." },
-    ]);
-  });
-
-  it("returns [] for text with fewer than 2 headings", () => {
-    expect(parseExplanationSections("Just plain text, no headings at all.")).toEqual([]);
-    expect(parseExplanationSections("### Only One\n\nBody text.")).toEqual([]);
-  });
-});
-
-describe("restoreFromHistory -- checkQuestion/solveSteps", () => {
-  it("surfaces checkQuestion/solveSteps from the row that generated them", () => {
-    const rows: HistoryRow[] = [
-      {
-        text: "### Motivation\n\nWhy this matters.\n\n### The Mechanism\n\nHow it works.",
-        tag: "Grounded Explanation",
-        checkQuestion: "Why is this faster than the naive approach?",
-        solveSteps: ["Step one", "Step two", "Step three"],
-      },
-    ];
-    const result = restoreFromHistory(rows);
-    expect(result?.checkQuestion).toBe("Why is this faster than the naive approach?");
-    expect(result?.solveSteps).toEqual(["Step one", "Step two", "Step three"]);
-  });
-
-  it("finds checkQuestion/solveSteps on an earlier row even when the LAST row is a plain follow-up answer", () => {
-    const rows: HistoryRow[] = [
-      {
-        text: "### Motivation\n\nWhy this matters.\n\n### The Mechanism\n\nHow it works.",
-        tag: "Grounded Explanation",
-        checkQuestion: "Why is this faster than the naive approach?",
-        solveSteps: ["Step one", "Step two", "Step three"],
-      },
-      { text: "Here's the answer to your follow-up question.", tag: "Grounded Explanation" },
-    ];
-    const result = restoreFromHistory(rows);
-    expect(result?.stage).toBe("explain-shown");
-    expect(result?.checkQuestion).toBe("Why is this faster than the naive approach?");
-    expect(result?.solveSteps).toEqual(["Step one", "Step two", "Step three"]);
-  });
-
-  it("leaves checkQuestion/solveSteps undefined when no row has them (pre-feature session)", () => {
-    const rows: HistoryRow[] = [{ text: "Here's the explanation.", tag: "Grounded Explanation" }];
-    const result = restoreFromHistory(rows);
-    expect(result?.checkQuestion).toBeUndefined();
-    expect(result?.solveSteps).toBeUndefined();
+    const [explain, diagram] = mapHistoryRowsToMessages(rows);
+    expect(explain.heading).toBe("Push and Pop");
+    expect(diagram.heading).toBeUndefined();
   });
 });
 

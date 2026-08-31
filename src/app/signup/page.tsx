@@ -186,7 +186,7 @@ export default function SignupPage() {
     <div className={styles.page}>
       <div className={styles.card}>
         <Link href="/" className={styles.logo}>
-          Tutor
+          Bridge
         </Link>
 
         <div className={styles.progress}>

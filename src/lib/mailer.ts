@@ -17,7 +17,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-const FROM = `Adaptive Learning Tutor <${GMAIL_USER}>`;
+const FROM = `Bridge — Adaptive Learning <${GMAIL_USER}>`;
 
 export async function sendOtpEmail(to: string, code: string) {
   await transporter.sendMail({

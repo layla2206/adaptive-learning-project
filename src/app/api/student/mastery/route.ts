@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
         session_id: typeof body.sessionId === "string" ? body.sessionId : undefined,
         explanation: typeof body.explanation === "string" ? body.explanation : undefined,
         solution: typeof body.solution === "string" ? body.solution : undefined,
+        subidea_id: typeof body.subideaId === "string" ? body.subideaId : undefined,
       }),
     });
     const data = await response.json();
@@ -48,7 +49,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: data.detail ?? data.error ?? "Mastery evaluation failed" }, { status: response.status });
     }
 
-    if (data.passed === true) {
+    // `passed` now fires per sub-idea (the loop's mastery check happens once
+    // per sub-idea, not once per topic) -- XP is for finishing the WHOLE
+    // topic, so it triggers on topicDone (every sub-idea resolved), not on
+    // any individual sub-idea's passed flag.
+    if (data.topicDone === true) {
       const { error: xpError } = await supabase.from("xp_log").insert({
         student_id: studentId,
         topic_id: body.topicId,

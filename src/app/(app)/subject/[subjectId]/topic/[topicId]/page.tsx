@@ -15,12 +15,12 @@ import {
   nextId,
   mapHistoryRowsToMessages,
   restoreFromHistory,
-  parseExplanationSections,
   errorMessageFor,
   RETRY_TAGS,
   type Stage,
   type Message,
   type Citation,
+  type ExplanationSection,
   type FoundationsQuestion,
 } from "@/lib/sessionHistory";
 import styles from "./page.module.css";
@@ -89,6 +89,34 @@ function ThinkingIndicator({ label }: { label: string }) {
   );
 }
 
+/** A raw session_messages row as /api/topic/resume returns it. */
+interface CurrentMessageRow {
+  sender: "student" | "ai";
+  text: string;
+  tag?: string;
+  heading?: string;
+  citations?: Citation[];
+  isDiagram?: boolean;
+  hintsUsed?: number;
+  maxHints?: number;
+}
+
+function messagesFromCurrentRows(rows: CurrentMessageRow[]): Message[] {
+  return rows.map((row) => ({
+    id: nextId(),
+    role: row.sender === "student" ? "user" : "tutor",
+    tag: row.tag === "Hint" ? `Hint ${row.hintsUsed}/${row.maxHints}` : row.tag,
+    heading: row.isDiagram ? undefined : row.heading,
+    paragraphs: row.isDiagram
+      ? row.citations?.length
+        ? [`Sources: ${row.citations.map((c) => `${c.mark} ${c.source}`).join(" · ")}`]
+        : []
+      : [row.text],
+    citations: row.isDiagram ? undefined : row.citations,
+    diagram: row.isDiagram ? row.text : undefined,
+  }));
+}
+
 export default function TopicPage() {
   const params = useParams<{ subjectId: string; topicId: string }>();
   const { subjects, userName, loading, markTopicMastered, setTopicProgress } = useTutorStore();
@@ -114,18 +142,18 @@ export default function TopicPage() {
   const [practiceAvailability, setPracticeAvailability] = useState<{ practiceAssignment: boolean; quiz: boolean } | null>(null);
   const [quizSelecting, setQuizSelecting] = useState(false);
   const [selectedQuizTopicIds, setSelectedQuizTopicIds] = useState<Set<string>>(new Set());
-  // Topic-specific mastery-check prompts generated alongside the ground-up
-  // explanation (see backend's generate_structured_explanation) -- fall back
-  // to the generic copy below when absent (older session, or the explain
-  // call failed and never produced them).
-  const [checkQuestion, setCheckQuestion] = useState<string | null>(null);
-  const [solveSteps, setSolveSteps] = useState<string[] | null>(null);
-  // Id of the currently-paced "Grounded Explanation" message, so the
-  // Continue-to-next-section control keeps tracking the right message even
-  // after the student asks an in-context follow-up question (which appends
-  // its own message, becoming the new "last" one).
-  const [pacedMessageId, setPacedMessageId] = useState<string | null>(null);
+  // Every sub-idea's own mini-lesson, generated once (one Gemini call) right
+  // after Diagnose -- the explain/check/hint/retry loop sequences through
+  // these one at a time, each fully self-contained (its own follow-ups,
+  // check question, solve steps). Never regenerated on resume -- /topic/
+  // resume reads these back from where /query's full-explanation call
+  // already persisted them.
+  const [sections, setSections] = useState<ExplanationSection[]>([]);
+  const [subideaIndex, setSubideaIndex] = useState(0);
   const [followUpInput, setFollowUpInput] = useState("");
+  const [followUpPending, setFollowUpPending] = useState(false);
+
+  const currentSection = sections[subideaIndex];
 
   // Practice/quiz generation only needs the topic to be reachable (not
   // locked behind a prerequisite) -- unlike the mastered-hub stage below,
@@ -159,13 +187,9 @@ export default function TopicPage() {
     let cancelled = false;
 
     // Reopening an already-mastered topic must never re-fire the diagnostic/
-    // foundations generator -- that used to happen silently on every visit
-    // (the mastery loop's last message is tagged "Result", which
-    // restoreFromHistory correctly treats as terminal/non-resumable, so the
-    // old code always fell through to a fresh, quota-spending generate call).
-    // A mastered topic goes straight to its hub instead; no session/history
-    // fetch needed here at all -- "Review the explanation" loads that lazily,
-    // on demand, only if the student actually asks for it.
+    // foundations generator. A mastered topic goes straight to its hub
+    // instead; no history/progress fetch needed here at all -- "Review the
+    // explanation" loads that lazily, on demand, only if the student asks.
     if (topic.state === "mastered") {
       queueMicrotask(() => {
         if (cancelled) return;
@@ -228,41 +252,96 @@ export default function TopicPage() {
         return;
       }
 
+      // The per-sub-idea loop's own authoritative resume point -- reads
+      // backend/main.py's topic_progress table directly (which sub-idea,
+      // which stage, how many hints already used) rather than inferring a
+      // stage from the last chat message, which proved fragile. If Explain
+      // has already run for this topic, this is always the right thing to
+      // resume into, regardless of whether a Foundations gate ran first.
       try {
-        const historyRes = await fetch(`/api/session/history?topicId=${topicId}`, {
+        const progressRes = await fetch(`/api/topic/resume?topicId=${topicId}`, {
           headers: { Authorization: `Bearer ${session.token}` },
         });
-        const historyData = await historyRes.json();
+        const progressData = await progressRes.json();
         if (cancelled) return;
-        if (historyRes.ok && historyData.sessionId) {
-          const restored = restoreFromHistory(historyData.messages ?? []);
-          if (restored) {
-            setSessionId(historyData.sessionId);
-            setMessages(restored.messages);
-            setStage(restored.stage);
-            setFoundationsCurrent(restored.foundationsCurrent ?? null);
-            setFoundationsExplanation(restored.foundationsExplanation ?? null);
-            setFoundationsPendingIndex(restored.foundationsPendingIndex ?? null);
-            setFoundationsTotal(restored.foundationsTotal ?? 0);
-            setCheckQuestion(restored.checkQuestion ?? null);
-            setSolveSteps(restored.solveSteps ?? null);
-            setDiagLoading(false);
-            return;
+        if (progressRes.ok && progressData.sections?.length > 0) {
+          setSessionId(progressData.sessionId ?? null);
+          setSections(progressData.sections);
+          setSubideaIndex(progressData.subideaIndex ?? 0);
+          setMessages(messagesFromCurrentRows(progressData.currentMessages ?? []));
+
+          if (progressData.stage === "done") {
+            markTopicMastered(subject!.id, topicId);
+            announceMastery(subject!.id, topicId);
+            setStage("done");
+          } else if (progressData.stage === "check") {
+            setStage("check-ask");
+          } else if (progressData.stage === "retry") {
+            // Retry content may or may not have been generated yet
+            // (e.g. logging out in the gap right after a failed check,
+            // before the auto-triggered retry call landed) -- resume
+            // straight into it either way.
+            const hasRetryContent = (progressData.currentMessages ?? []).some(
+              (m: CurrentMessageRow) => m.tag && RETRY_TAGS.has(m.tag)
+            );
+            if (hasRetryContent) {
+              setStage("retry-shown");
+            } else {
+              setStage("thinking-retry-explain");
+              await triggerRetryGenerate(progressData.sessionId ?? null, progressData.subideaIndex ?? 0, progressData.sections);
+            }
+          } else {
+            setStage("explain-shown");
           }
+          setDiagLoading(false);
+          return;
         }
       } catch {
-        // Couldn't check for a resumable session — fall through to a fresh diagnostic.
+        // Couldn't reach /topic/resume -- fall through to a fresh start.
       }
 
       if (cancelled) return;
-      if (topicId === FOUNDATIONS_GATE_TOPIC_ID) loadFoundations(session);
-      else loadQuestions(session);
+
+      // Explain hasn't run yet for this topic. top-sort1 needs its
+      // Foundations gate resolved first -- check for one already in
+      // progress before starting a fresh one.
+      if (topicId === FOUNDATIONS_GATE_TOPIC_ID) {
+        try {
+          const historyRes = await fetch(`/api/session/history?topicId=${topicId}`, {
+            headers: { Authorization: `Bearer ${session.token}` },
+          });
+          const historyData = await historyRes.json();
+          if (cancelled) return;
+          if (historyRes.ok && historyData.sessionId) {
+            const restored = restoreFromHistory(historyData.messages ?? []);
+            if (restored) {
+              setSessionId(historyData.sessionId);
+              setMessages(restored.messages);
+              setStage(restored.stage);
+              setFoundationsCurrent(restored.foundationsCurrent ?? null);
+              setFoundationsExplanation(restored.foundationsExplanation ?? null);
+              setFoundationsPendingIndex(restored.foundationsPendingIndex ?? null);
+              setFoundationsTotal(restored.foundationsTotal ?? 0);
+              setDiagLoading(false);
+              return;
+            }
+          }
+        } catch {
+          // Couldn't check for a resumable foundations session -- fall through.
+        }
+        if (cancelled) return;
+        loadFoundations(session);
+        return;
+      }
+
+      loadQuestions(session);
     }
 
     resumeOrStart();
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topic?.id]);
 
   if (loading) {
@@ -284,17 +363,6 @@ export default function TopicPage() {
     const id = nextId();
     setMessages((prev) => [...prev, { ...msg, id }]);
     return id;
-  }
-
-  /** Advances a paced explanation message to reveal its next section. */
-  function revealNextSection(messageId: string) {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.id === messageId && m.sections
-          ? { ...m, revealedCount: Math.min((m.revealedCount ?? 0) + 1, m.sections.length) }
-          : m
-      )
-    );
   }
 
   function toggleCitation(key: string) {
@@ -377,6 +445,29 @@ export default function TopicPage() {
     }
   }
 
+  /** Shows sub-idea `index`'s already-generated mini-lesson as a fresh chat
+   * -- each sub-idea's conversation is scoped to itself, not shown mixed
+   * with the others, so this always resets `messages` first. Takes an
+   * explicit sections array (not the `sections` state) so it works right
+   * after a fresh fetch, before React has committed the new state. */
+  function showSection(index: number, sectionsArr: ExplanationSection[]) {
+    setSubideaIndex(index);
+    setMessages([]);
+    const section = sectionsArr[index];
+    if (!section) {
+      setStage("done");
+      return;
+    }
+    pushMessage({
+      role: "tutor",
+      tag: "Grounded Explanation",
+      heading: section.heading,
+      paragraphs: [section.body],
+      citations: section.citations,
+    });
+    setStage("explain-shown");
+  }
+
   async function handleDiagnoseSummaryContinue() {
     if (!topic || !subject) return;
     setStage("thinking-explain");
@@ -404,29 +495,27 @@ export default function TopicPage() {
       if (!response.ok) throw new Error(data.error || "Something went wrong");
 
       if (data.sessionId) setSessionId(data.sessionId);
-      setCheckQuestion(data.checkQuestion ?? null);
-      setSolveSteps(data.solveSteps ?? null);
-
-      const sections = parseExplanationSections(data.answer ?? "");
-      const messageId = pushMessage(
-        sections.length
-          ? { role: "tutor", tag: "Grounded Explanation", paragraphs: [], citations: data.citations, sections, revealedCount: 1 }
-          : { role: "tutor", tag: "Grounded Explanation", paragraphs: [data.answer], citations: data.citations }
-      );
-      setPacedMessageId(sections.length ? messageId : null);
+      const newSections: ExplanationSection[] = data.sections ?? [];
+      setSections(newSections);
+      if (newSections.length === 0) {
+        pushMessage({ role: "tutor", paragraphs: ["I don't have enough context to answer that question."] });
+        setStage("explain-shown");
+        return;
+      }
+      showSection(0, newSections);
     } catch (err) {
       pushMessage({
         role: "tutor",
         paragraphs: [errorMessageFor(err, "Something went wrong getting an explanation for this topic — try again in a moment.")],
       });
-    } finally {
       setStage("explain-shown");
     }
   }
 
-  /** In-context question during a paced explanation -- reuses the normal
-   * ask flow (a plain, non-sectioned /query answer) without touching the
-   * paced message's reveal state or the current stage. */
+  /** In-context question during the current sub-idea's explanation -- reuses
+   * the normal ask flow (a plain, non-sectioned /query answer), anchored to
+   * this sub-idea specifically so a vague "explain more" can't balloon into
+   * covering other sub-ideas (see generate_answer's current_section param). */
   async function handleAskFollowUp() {
     if (!topic || !subject || !followUpInput.trim()) return;
     const question = followUpInput.trim();
@@ -439,6 +528,7 @@ export default function TopicPage() {
       return;
     }
 
+    setFollowUpPending(true);
     try {
       const response = await fetch("/api/query", {
         method: "POST",
@@ -448,6 +538,8 @@ export default function TopicPage() {
           topicId: topic.id,
           question,
           sessionId: sessionId ?? undefined,
+          subideaId: currentSection?.subideaId ?? undefined,
+          currentSectionText: currentSection ? `${currentSection.heading}\n\n${currentSection.body}` : undefined,
         }),
       });
       const data = await response.json();
@@ -456,6 +548,8 @@ export default function TopicPage() {
       pushMessage({ role: "tutor", tag: "Grounded Explanation", paragraphs: [data.answer], citations: data.citations });
     } catch (err) {
       pushMessage({ role: "tutor", paragraphs: [errorMessageFor(err, "Something went wrong answering that — try again in a moment.")] });
+    } finally {
+      setFollowUpPending(false);
     }
   }
 
@@ -548,11 +642,110 @@ export default function TopicPage() {
       role: "tutor",
       tag: "Mastery Check",
       paragraphs: [
-        checkQuestion ??
-          `Your turn — walk me through ${topic.name} in your own words, like you're explaining it to someone who's never seen it. Be specific about the "why," not just the "what."`,
+        currentSection?.checkQuestion ??
+          `Your turn — walk me through ${currentSection?.heading ?? topic.name} in your own words, like you're explaining it to someone who's never seen it. Be specific about the "why," not just the "what."`,
       ],
     });
     setStage("check-ask");
+  }
+
+  /** Generates a retry in a different format for the CURRENT sub-idea only
+   * -- anchored to that sub-idea's own already-generated explanation (see
+   * backend's /retry/generate), not the whole topic. Shared by the live
+   * auto-trigger right after a failed check and by resume (logging out in
+   * the gap before this call ever landed). */
+  async function triggerRetryGenerate(effectiveSessionId: string | null, index: number, sectionsArr: ExplanationSection[]) {
+    const session = getSession();
+    if (!session || !topic) return;
+    try {
+      const retryRes = await fetch("/api/retry/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          topicId: topic.id,
+          sessionId: effectiveSessionId ?? undefined,
+          subideaId: sectionsArr[index]?.subideaId ?? undefined,
+        }),
+      });
+      const retryData = await retryRes.json();
+      if (!retryRes.ok) throw new Error(retryData.error || "Something went wrong");
+      if (retryData.sessionId) setSessionId(retryData.sessionId);
+
+      const citations: Citation[] = retryData.citations ?? [];
+      if (retryData.isDiagram) {
+        // Diagram/Mind Map formats return Mermaid syntax, not prose — nothing
+        // for renderCite's [\d] regex to attach a citation chip to, so sources
+        // are listed as a plain caption instead of inline markers.
+        pushMessage({
+          role: "tutor",
+          tag: retryData.format,
+          paragraphs: citations.length
+            ? [`Sources: ${citations.map((c: Citation) => `${c.mark} ${c.source}`).join(" · ")}`]
+            : [],
+          diagram: retryData.content,
+        });
+      } else {
+        pushMessage({ role: "tutor", tag: retryData.format, paragraphs: [retryData.content], citations });
+      }
+      setStage("retry-shown");
+    } catch (err) {
+      pushMessage({ role: "tutor", paragraphs: [errorMessageFor(err, "Something went wrong generating a retry — try again in a moment.")] });
+      setStage("check-ask");
+    }
+  }
+
+  /** Shared by both the explain-check and the retry-check submit handlers
+   * (backend/main.py's /mastery/check returns the same shape either way).
+   * `advanced` covers a passed explain-check AND a retry-check of any
+   * outcome (the "advance anyway on final failure" rule) -- either way the
+   * student moves to the next sub-idea; a failed retry-check is still
+   * recorded server-side (mastery_checks passed=false), which is what
+   * surfaces it as a "gap" in instructor insights. */
+  async function handleCheckResult(checkData: {
+    sessionId?: string;
+    passed?: boolean;
+    feedback: string;
+    hint?: string;
+    hintsUsed?: number;
+    maxHints?: number;
+    advanced?: boolean;
+    topicDone?: boolean;
+  }) {
+    const effectiveSessionId = checkData.sessionId ?? sessionId;
+    if (checkData.sessionId) setSessionId(checkData.sessionId);
+    if (!topic || !subject) return;
+
+    if (checkData.topicDone) {
+      pushMessage({ role: "tutor", tag: "Result", paragraphs: [checkData.feedback] });
+      markTopicMastered(subject.id, topic.id);
+      announceMastery(subject.id, topic.id);
+      setStage("done");
+      return;
+    }
+
+    if (checkData.advanced) {
+      pushMessage({ role: "tutor", tag: "Result", paragraphs: [checkData.feedback] });
+      const nextIndex = subideaIndex + 1;
+      window.setTimeout(() => showSection(nextIndex, sections), 1200);
+      return;
+    }
+
+    if (checkData.hint) {
+      pushMessage({
+        role: "tutor",
+        tag: `Hint ${checkData.hintsUsed}/${checkData.maxHints}`,
+        paragraphs: [`${checkData.feedback}\n\n${checkData.hint}`],
+      });
+      setStage("check-ask");
+      return;
+    }
+
+    // Hints exhausted -- generate a retry in a different format for this
+    // sub-idea before the student can attempt the solve-end-to-end check.
+    setTopicProgress(subject.id, topic.id, 70);
+    pushMessage({ role: "tutor", tag: "Feedback", paragraphs: [checkData.feedback] });
+    setStage("thinking-retry-explain");
+    await triggerRetryGenerate(effectiveSessionId, subideaIndex, sections);
   }
 
   async function handleCheckSubmit() {
@@ -573,68 +766,16 @@ export default function TopicPage() {
       const checkRes = await fetch("/api/student/mastery", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ topicId: topic.id, sessionId: sessionId ?? undefined, explanation: answer }),
+        body: JSON.stringify({
+          topicId: topic.id,
+          sessionId: sessionId ?? undefined,
+          explanation: answer,
+          subideaId: currentSection?.subideaId ?? undefined,
+        }),
       });
       const checkData = await checkRes.json();
       if (!checkRes.ok) throw new Error(checkData.error || "Something went wrong");
-      if (checkData.sessionId) setSessionId(checkData.sessionId);
-
-      if (checkData.passed) {
-        pushMessage({ role: "tutor", tag: "Result", paragraphs: [checkData.feedback] });
-        markTopicMastered(subject.id, topic.id);
-        announceMastery(subject.id, topic.id);
-        setStage("done");
-        return;
-      }
-
-      if (checkData.hint) {
-        pushMessage({
-          role: "tutor",
-          tag: `Hint ${checkData.hintsUsed}/${checkData.maxHints}`,
-          paragraphs: [`${checkData.feedback}\n\n${checkData.hint}`],
-        });
-        setStage("check-ask");
-        return;
-      }
-
-      setTopicProgress(subject.id, topic.id, 70);
-      pushMessage({ role: "tutor", tag: "Feedback", paragraphs: [checkData.feedback] });
-      setStage("thinking-retry-explain");
-
-      const retryRes = await fetch("/api/retry/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ topicId: topic.id, sessionId: checkData.sessionId ?? sessionId ?? undefined }),
-      });
-      const retryData = await retryRes.json();
-      if (!retryRes.ok) throw new Error(retryData.error || "Something went wrong");
-      if (retryData.sessionId) setSessionId(retryData.sessionId);
-
-      const citations: Citation[] = retryData.citations ?? [];
-
-      if (retryData.isDiagram) {
-        // Diagram/Mind Map formats return Mermaid syntax, not prose — nothing
-        // for renderCite's [\d] regex to attach a citation chip to, so sources
-        // are listed as a plain caption instead of inline markers.
-        pushMessage({
-          role: "tutor",
-          tag: retryData.format,
-          paragraphs: citations.length
-            ? [`Sources: ${citations.map((c: Citation) => `${c.mark} ${c.source}`).join(" · ")}`]
-            : [],
-          diagram: retryData.content,
-        });
-      } else {
-        // Prose formats now cite inline (backend renumbers to match citations,
-        // same as /query) — renderCite's [\d] regex picks the markers up directly.
-        pushMessage({
-          role: "tutor",
-          tag: retryData.format,
-          paragraphs: [retryData.content],
-          citations,
-        });
-      }
-      setStage("retry-shown");
+      await handleCheckResult(checkData);
     } catch (err) {
       pushMessage({ role: "tutor", paragraphs: [errorMessageFor(err, "Something went wrong checking that — try again in a moment.")] });
       setStage("check-ask");
@@ -675,18 +816,16 @@ export default function TopicPage() {
       const response = await fetch("/api/student/mastery", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ topicId: topic.id, sessionId: sessionId ?? undefined, solution }),
+        body: JSON.stringify({
+          topicId: topic.id,
+          sessionId: sessionId ?? undefined,
+          solution,
+          subideaId: currentSection?.subideaId ?? undefined,
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Something went wrong");
-      if (data.sessionId) setSessionId(data.sessionId);
-
-      pushMessage({ role: "tutor", tag: "Result", paragraphs: [data.feedback] });
-      if (data.passed) {
-        markTopicMastered(subject.id, topic.id);
-        announceMastery(subject.id, topic.id);
-      }
-      setStage("done");
+      await handleCheckResult(data);
     } catch (err) {
       pushMessage({ role: "tutor", paragraphs: [errorMessageFor(err, "Something went wrong checking that — try again in a moment.")] });
       setStage("retry-check-ask");
@@ -914,37 +1053,24 @@ export default function TopicPage() {
                 </div>
               )}
               {m.diagram && <MermaidDiagram code={m.diagram} />}
-              {m.sections
-                ? m.sections.slice(0, m.revealedCount ?? m.sections.length).map((s, i) => (
-                    <div key={i} className={styles.explanationSection}>
-                      <h3 className={styles.explanationHeading}>{s.heading}</h3>
-                      <TutorMarkdown
-                        text={s.body}
-                        citations={m.citations}
-                        messageId={m.id}
-                        expandedCitations={expandedCitations}
-                        onToggleCitation={toggleCitation}
-                        citeChipClassName={styles.citeChip}
-                        citeChipOpenClassName={styles.citeChipOpen}
-                      />
-                    </div>
-                  ))
-                : m.paragraphs.map((p, i) =>
-                    m.role === "tutor" ? (
-                      <TutorMarkdown
-                        key={i}
-                        text={p}
-                        citations={m.citations}
-                        messageId={m.id}
-                        expandedCitations={expandedCitations}
-                        onToggleCitation={toggleCitation}
-                        citeChipClassName={styles.citeChip}
-                        citeChipOpenClassName={styles.citeChipOpen}
-                      />
-                    ) : (
-                      <p key={i}>{p}</p>
-                    )
-                  )}
+              {!m.diagram && m.heading && <h3 className={styles.explanationHeading}>{m.heading}</h3>}
+              {!m.diagram &&
+                m.paragraphs.map((p, i) =>
+                  m.role === "tutor" ? (
+                    <TutorMarkdown
+                      key={i}
+                      text={p}
+                      citations={m.citations}
+                      messageId={m.id}
+                      expandedCitations={expandedCitations}
+                      onToggleCitation={toggleCitation}
+                      citeChipClassName={styles.citeChip}
+                      citeChipOpenClassName={styles.citeChipOpen}
+                    />
+                  ) : (
+                    <p key={i}>{p}</p>
+                  )
+                )}
               {m.citations
                 ?.filter((c) => expandedCitations.has(`${m.id}:${c.mark}`))
                 .map((c) => (
@@ -964,49 +1090,39 @@ export default function TopicPage() {
         {(stage === "checking" || stage === "retry-checking" || stage === "foundations-checking") && (
           <ThinkingIndicator label="Checking…" />
         )}
+        {followUpPending && <ThinkingIndicator label="Thinking…" />}
       </div>
 
-      {stage === "explain-shown" && (() => {
-        const pacedMessage = pacedMessageId ? messages.find((m) => m.id === pacedMessageId) : undefined;
-        const isPacing = !!pacedMessage?.sections && (pacedMessage.revealedCount ?? 0) < pacedMessage.sections.length;
-
-        if (isPacing) {
-          const currentHeading = pacedMessage!.sections![(pacedMessage!.revealedCount ?? 1) - 1]?.heading;
-          return (
-            <>
-              <div className={styles.composer}>
-                <textarea
-                  value={followUpInput}
-                  onChange={(e) => setFollowUpInput(e.target.value)}
-                  placeholder={currentHeading ? `Ask a question about "${currentHeading}"...` : "Ask a question..."}
-                />
-                <div className={styles.composerFoot}>
-                  <span className={styles.composerHint}>Optional — ask about what you just read</span>
-                  <button type="button" className={styles.continueButton} onClick={handleAskFollowUp} disabled={!followUpInput.trim()}>
-                    Ask
-                    <ArrowIcon size={14} />
-                  </button>
-                </div>
-              </div>
-              <div className={styles.continueRow}>
-                <button type="button" className={styles.continueButton} onClick={() => revealNextSection(pacedMessageId!)}>
-                  Continue
-                  <ArrowIcon size={14} />
-                </button>
-              </div>
-            </>
-          );
-        }
-
-        return (
+      {stage === "explain-shown" && (
+        <>
+          <div className={styles.composer}>
+            <textarea
+              value={followUpInput}
+              onChange={(e) => setFollowUpInput(e.target.value)}
+              placeholder={currentSection ? `Ask a question about "${currentSection.heading}"...` : "Ask a question..."}
+              disabled={followUpPending}
+            />
+            <div className={styles.composerFoot}>
+              <span className={styles.composerHint}>Optional — ask about what you just read</span>
+              <button
+                type="button"
+                className={styles.continueButton}
+                onClick={handleAskFollowUp}
+                disabled={!followUpInput.trim() || followUpPending}
+              >
+                Ask
+                <ArrowIcon size={14} />
+              </button>
+            </div>
+          </div>
           <div className={styles.continueRow}>
-            <button type="button" className={styles.continueButton} onClick={handleContinueToCheck}>
+            <button type="button" className={styles.continueButton} onClick={handleContinueToCheck} disabled={followUpPending}>
               I understand — check me
               <ArrowIcon size={14} />
             </button>
           </div>
-        );
-      })()}
+        </>
+      )}
 
       {stage === "retry-shown" && (
         <>
@@ -1052,7 +1168,7 @@ export default function TopicPage() {
 
       {stage === "retry-check-ask" && (
         <div className={styles.composer}>
-          {(solveSteps ?? STEP_PROMPTS).map((label, i) => (
+          {(currentSection?.solveSteps ?? STEP_PROMPTS).map((label, i) => (
             <div key={i} className={styles.stepInputRow}>
               <label className={styles.stepInputLabel}>
                 Step {i + 1} — {label}

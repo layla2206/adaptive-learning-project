@@ -1,0 +1,55 @@
+.cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 160px;
+}
+
+.track {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: visible;
+}
+
+.fill {
+  position: relative;
+  height: 100%;
+  min-width: 8px;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.good {
+  background: var(--status-good);
+}
+
+.warning {
+  background: var(--status-warning);
+}
+
+.critical {
+  background: var(--status-critical);
+}
+
+.gapRing {
+  position: absolute;
+  top: 50%;
+  right: -2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--status-critical);
+  background: var(--bg-card);
+  transform: translate(50%, -50%);
+}
+
+.value {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}

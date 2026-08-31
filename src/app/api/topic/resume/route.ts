@@ -4,19 +4,14 @@ import { supabase } from "@/lib/supabaseClient";
 
 const FASTAPI_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
-export async function POST(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const currentUser = getCurrentUser(req);
   if (!currentUser || currentUser.role !== "student") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  let body: Record<string, unknown>;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON" }, { status: 400 });
-  }
-  if (typeof body.topicId !== "string" || !body.topicId.trim()) {
+  const topicId = req.nextUrl.searchParams.get("topicId");
+  if (!topicId) {
     return NextResponse.json({ error: "topicId is required" }, { status: 400 });
   }
 
@@ -31,23 +26,18 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const response = await fetch(`${FASTAPI_URL}/retry/generate`, {
+    const response = await fetch(`${FASTAPI_URL}/topic/resume`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        student_id: studentId,
-        topic_id: body.topicId,
-        session_id: typeof body.sessionId === "string" ? body.sessionId : undefined,
-        subidea_id: typeof body.subideaId === "string" ? body.subideaId : undefined,
-      }),
+      body: JSON.stringify({ student_id: studentId, topic_id: topicId }),
     });
     const data = await response.json();
     if (!response.ok) {
-      return NextResponse.json({ error: data.detail ?? data.error ?? "Retry generation failed" }, { status: response.status });
+      return NextResponse.json({ error: data.detail ?? data.error ?? "Unable to load topic progress" }, { status: response.status });
     }
     return NextResponse.json(data);
   } catch (error) {
-    console.error("Retry generation proxy error:", error);
-    return NextResponse.json({ error: "Unable to reach retry generation service" }, { status: 502 });
+    console.error("Topic resume proxy error:", error);
+    return NextResponse.json({ error: "Unable to reach session service" }, { status: 502 });
   }
 }

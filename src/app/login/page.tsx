@@ -53,7 +53,7 @@ export default function LoginPage() {
       <div className={styles.page}>
         <div className={styles.card}>
           <Link href="/" className={styles.logo}>
-            Tutor
+            Bridge
           </Link>
           <h1 className={styles.title}>Check your email</h1>
           <p className={styles.subtitle}>
@@ -73,7 +73,7 @@ export default function LoginPage() {
     <div className={styles.page}>
       <div className={styles.card}>
         <Link href="/" className={styles.logo}>
-          Tutor
+          Bridge
         </Link>
 
         <div className={styles.stepBody}>

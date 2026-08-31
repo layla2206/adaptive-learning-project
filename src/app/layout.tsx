@@ -23,7 +23,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Tutor — Adaptive Learning",
+  title: "Bridge — Adaptive Learning",
   description:
     "Diagnostic-first tutoring: find the gap, explain it with sources, check for real understanding, and retry until it sticks.",
 };

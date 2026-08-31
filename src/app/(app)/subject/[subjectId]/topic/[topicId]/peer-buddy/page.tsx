@@ -21,6 +21,19 @@ function nextId() {
   return `pb${msgId}`;
 }
 
+function ThinkingIndicator() {
+  return (
+    <div className={styles.bubbleRow}>
+      <div className={`${styles.bubble} ${styles.thinkingBubble}`}>
+        <div className={styles.thinkingLines}>
+          <span className={styles.thinkingLine} />
+          <span className={`${styles.thinkingLine} ${styles.thinkingLineShort}`} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PeerBuddyPage() {
   const params = useParams<{ subjectId: string; topicId: string }>();
   const { subjects, userName, loading } = useTutorStore();
@@ -159,6 +172,7 @@ export default function PeerBuddyPage() {
             </div>
           </div>
         ))}
+        {sending && <ThinkingIndicator />}
         <div ref={bottomRef} />
       </div>
 
@@ -175,6 +189,7 @@ export default function PeerBuddyPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Explain it to them, in your own words…"
+            disabled={sending}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();

@@ -16,6 +16,16 @@
   --teal: #3d7a6f;
   --teal-soft: rgba(61, 122, 111, 0.12);
 
+  /* Reserved status scale (good -> critical) for score/severity encodings in
+     charts -- distinct from --plum (brand/interactive accent) so a status
+     color never doubles as "series 4". */
+  --status-good: var(--teal);
+  --status-good-soft: var(--teal-soft);
+  --status-warning: #d97706;
+  --status-warning-soft: rgba(217, 119, 6, 0.12);
+  --status-critical: #d64545;
+  --status-critical-soft: rgba(214, 69, 69, 0.12);
+
   --radius-lg: 20px;
   --radius-sm: 12px;
 

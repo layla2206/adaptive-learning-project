@@ -5,6 +5,7 @@ import type { Course, StuckTopic } from "@/lib/instructorData";
 import { ArrowIcon } from "@/components/icons";
 import { getSession } from "@/lib/session";
 import TagRow from "@/components/TagRow";
+import SubideaSignalsPanel from "./SubideaSignalsPanel";
 import styles from "./StuckTable.module.css";
 
 export default function StuckTable({
@@ -91,6 +92,7 @@ export default function StuckTable({
                 <tr className={styles.insightRow}>
                   <td colSpan={4}>
                     <div className={styles.insightBlock}>
+                      {t.subideaSignals.length > 0 && <SubideaSignalsPanel signals={t.subideaSignals} />}
                       {t.mistakeBreakdown.length > 0 ? (
                         <TagRow
                           tags={t.mistakeBreakdown.map((b) => `${b.label} — ${b.count} of ${t.stuckCount} stuck students`)}

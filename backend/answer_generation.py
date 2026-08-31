@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Any, Iterable, Union
+from typing import Any, Iterable, Optional, Union
 
 from dotenv import load_dotenv
 
@@ -45,33 +45,85 @@ def _context_text(chunks: Iterable[Any]) -> str:
 
 
 def _relevant_chunks(chunks: Iterable[Any]) -> list[Any]:
+    """Filters out chunks that carry a similarity score below threshold.
+    Chunks with no similarity score at all (e.g. fetched directly by
+    topic_id rather than via embedding search) were already scoped as
+    relevant by the caller and pass through untouched -- the wording-match
+    threshold only makes sense as a filter over embedding-ranked results."""
     return [
         chunk for chunk in chunks
         if isinstance(chunk, dict)
-        and isinstance(chunk.get("similarity"), (int, float))
-        and chunk["similarity"] >= SIMILARITY_THRESHOLD
+        and (
+            not isinstance(chunk.get("similarity"), (int, float))
+            or chunk["similarity"] >= SIMILARITY_THRESHOLD
+        )
     ]
 
 
-def generate_answer(question: str, chunks: Iterable[Any], gemini_client: Any) -> str:
-    """Generate a plain-text answer grounded only in the supplied chunks."""
+def generate_answer(
+    question: str,
+    chunks: Iterable[Any],
+    gemini_client: Any,
+    conversation_context: Optional[str] = None,
+    current_section: Optional[str] = None,
+) -> str:
+    """Generate a plain-text answer grounded only in the supplied chunks.
+
+    conversation_context (prior turns in this session, student+ai) matters
+    for a follow-up like "explain more" or "why" -- without it the model has
+    no way to know what "more" refers to and, correctly by its own
+    instructions below, says it doesn't have enough context even though the
+    topic's chunks are right there. Full-explanation calls pass None since
+    there's no prior turn yet to reference.
+
+    current_section (the paced-explanation section actually on screen when a
+    follow-up was asked) anchors a vague "explain more"/"why" to that one
+    section specifically, AND is itself usable content the model can answer
+    from directly -- a plain "I don't understand, explain again" needs
+    nothing beyond re-explaining that section's own text, and must not fail
+    just because the separately-fetched chunk set (below, "Learning
+    content") happens not to cover it. Without current_section at all, a
+    vague follow-up combined with conversation_context (which includes the
+    full prior explanation) and the topic's whole chunk set reads to the
+    model as "explain whatever hasn't been covered yet" -- confirmed live:
+    it produced a multi-section answer covering the rest of the lecture
+    instead of a short, focused reply."""
     if not isinstance(question, str) or not question.strip():
         return NO_CONTEXT_ANSWER
 
     context_text = _context_text(_relevant_chunks(chunks))
-    if not context_text:
+    if not context_text and not current_section:
         return NO_CONTEXT_ANSWER
 
-    prompt = f"""Answer the user's question using only the learning content below.
-If the content does not contain enough information, say that you do not have enough context to answer.
-Do not invent facts or use knowledge outside the supplied content.
-Return only the answer as plain text. Cite supporting chunks inline using their IDs, for example [chunk-id].
+    history_block = (
+        f"\n\nConversation so far, oldest first (for context only -- answer only the question below, "
+        f"which may refer back to it, e.g. \"explain more\" or \"why\"):\n{conversation_context}\n"
+        if conversation_context else ""
+    )
+    section_block = (
+        f"\n\nThe student is currently reading this specific section of the explanation, and their question "
+        f"relates to it -- this is itself valid content to answer from (e.g. a plain \"explain again\" or "
+        f"\"I don't understand\" can be answered by re-explaining this section in different words), not just "
+        f"background:\n\"\"\"\n{current_section}\n\"\"\"\n"
+        if current_section else ""
+    )
 
+    prompt = f"""Answer the user's question using only the learning content below and/or the current section
+above (if given).
+If NEITHER contains enough information, say that you do not have enough context to answer.
+Do not invent facts or use knowledge outside what's supplied.
+Return only the answer as plain text. Cite supporting chunks inline using their IDs, for example [chunk-id],
+when your answer draws from the learning content below -- the current section above doesn't have chunk ids
+to cite, so don't invent one for it.
+Keep the answer concise (a few sentences, a short paragraph at most) and in plain prose -- do not use section
+headings or organize it like a lecture outline, and do not cover other parts of the topic beyond what the
+question actually asks, even if the source material below includes them.
+{history_block}{section_block}
 User question:
 {question.strip()}
 
 Learning content:
-{context_text}"""
+{context_text or "(none directly retrieved for this question -- rely on the current section above if given)"}"""
 
     try:
         response = gemini_client.models.generate_content(
@@ -91,20 +143,33 @@ Learning content:
     return answer.strip()
 
 
-def generate_structured_explanation(question: str, chunks: Iterable[Any], gemini_client: Any) -> Union[str, dict]:
+def generate_structured_explanation(
+    question: str,
+    chunks: Iterable[Any],
+    gemini_client: Any,
+    subideas: Optional[list] = None,
+) -> Union[str, dict]:
     """Like generate_answer, but for the one-time "explain this topic from
-    the ground up" request. Bundles three things into a single Gemini call
-    (same grounding rules as generate_answer) instead of three separate
-    ones, since a free-tier daily quota makes every extra call expensive:
+    the ground up" request. Bundles the whole topic's per-sub-idea content
+    into a single Gemini call (same grounding rules as generate_answer)
+    instead of one call per sub-idea, since a free-tier daily quota makes
+    every extra call expensive: each section IS one sub-idea's mini-lesson,
+    carrying its own checkQuestion (a mastery-check prompt scoped to that
+    one mechanism, e.g. "why does a hash table give faster lookup than an
+    unsorted array") and solveSteps (3 step prompts for that sub-idea's own
+    "solve end-to-end" check) -- the caller sequences these into one
+    self-contained explain/check mini-loop per sub-idea, not one combined
+    walkthrough for the whole topic.
 
-    - sections: the explanation broken into logical, Continue-button-paced
-      chunks instead of one wall of text.
-    - checkQuestion: a mastery-check prompt scoped to one specific mechanism
-      the explanation just covered (e.g. "why does a hash table give faster
-      lookup than an unsorted array"), replacing a generic, static
-      "explain this in your own words."
-    - solveSteps: 3 topic-specific step prompts for the "solve end-to-end"
-      mastery check, replacing today's generic "what do you start from?"
+    subideas: the topic's sub-idea list (each {"subidea_id", "label"}), if
+    any exist yet (get_or_generate_subideas runs lazily on first use, so
+    this is populated for essentially every topic with content). Every
+    section carries a subideaId from this closed set -- same call, no extra
+    Gemini cost -- so a section's granularity is stable and aggregable
+    across every student's own (freshly-worded) explanation, rather than an
+    id Gemini invents fresh each call. Empty subideas (rare -- a topic with
+    no content yet, or generation failed) falls back to sections with
+    subideaId=None; the caller can still sequence them by array position.
 
     Returns the NO_CONTEXT_ANSWER sentinel (not a dict) when there's no
     relevant content, exactly like generate_answer, so callers can check
@@ -116,35 +181,63 @@ def generate_structured_explanation(question: str, chunks: Iterable[Any], gemini
     if not context_text:
         return NO_CONTEXT_ANSWER
 
+    valid_subidea_ids = {s["subidea_id"] for s in subideas} if subideas else set()
+    if valid_subidea_ids:
+        subidea_list = "\n".join(f'- {s["subidea_id"]}: {s["label"]}' for s in subideas)
+        subidea_block = f"""
+
+This topic has the following pre-defined sub-ideas -- produce exactly one section per sub-idea below,
+in this order, and every section's "subideaId" MUST be exactly the matching id (do not invent new
+ones, do not omit any, do not merge two sub-ideas into one section):
+{subidea_list}"""
+    else:
+        subidea_block = ""
+
     prompt = f"""Answer the user's question using only the learning content below, organized for a
-student walking through it step by step.
+student walking through it step by step, one self-contained mini-lesson (section) at a time.
 If the content does not contain enough information, say that you do not have enough context to answer.
 Do not invent facts or use knowledge outside the supplied content.
 Cite supporting claims inline using the chunk's ID in brackets immediately after the claim, for
-example [chunk-id]. Only cite chunk IDs included below.
+example [chunk-id]. Only cite chunk IDs included below.{subidea_block}
 
 Return ONLY strict JSON with this exact shape:
 {{
-  "sections": [{{"heading": "...", "body": "... markdown, with inline [chunk-id] citations ..."}}],
-  "checkQuestion": "...",
-  "solveSteps": ["...", "...", "..."]
+  "sections": [
+    {{
+      "heading": "...",
+      "body": "... markdown, with inline [chunk-id] citations ...",
+      "subideaId": "...",
+      "checkQuestion": "...",
+      "solveSteps": ["...", "...", "..."]
+    }}
+  ]
 }}
 
-sections: break the explanation into 3-6 logical sections following the content's own natural
-structure (e.g. motivation, the core mechanism, edge cases, performance) -- each section should
-cover one coherent idea, not an arbitrary word-count split.
+Each section is a self-contained mini-lesson on ONE sub-idea -- a student will read it, then
+immediately be asked that section's own checkQuestion before moving to the next section, so do not
+assume they've seen any other section yet, and do not reference "as covered above/below."
 
-checkQuestion: ONE question that tests understanding of a specific mechanism or comparison from the
-explanation -- not an invitation to summarize everything. For example, for a hash table topic:
+checkQuestion (per section): ONE question that tests understanding of THIS section's specific
+mechanism -- not an invitation to summarize everything. For example, for a hash-table section on
+lookup speed:
 Bad: "Walk me through hash tables in your own words."
 Better: "Why does a hash table give you faster lookup than an unsorted array -- what's actually
 different about how each one finds a value?"
-The question must be answerable using only the content below, and must name the specific mechanism
-or comparison it's testing rather than asking generally "what do you know about X."
+The question must be answerable using only this section's own content, and must name the specific
+mechanism it's testing rather than asking generally "what do you know about X."
 
-solveSteps: exactly 3 short step labels (a few words each, like a checklist heading, not full
-sentences) for walking through solving one representative problem for this topic end-to-end, scoped
-to this topic's own method -- not generic steps like "what do you start from?"
+solveSteps (per section): exactly 3 short step labels (a few words each, like a checklist heading,
+not full sentences) for walking through solving ONE SPECIFIC, concrete example for THIS sub-idea
+end-to-end -- not generic steps like "what do you start from?"
+Ground every step in one concrete instance (actual class/variable/value names drawn from or
+consistent with this section's own body above), not an abstract description of the general
+procedure -- the student fills these in as a worked example, so a step must give them something
+concrete to act on rather than making them invent their own example from scratch.
+For a sub-idea on casting after popping from a generic Object stack:
+Bad: "Cast popped Objects back to type" (abstract -- cast what, to what?)
+Better: "Cast obj back to Box" (names the actual class from this section)
+All 3 steps must walk through the SAME one concrete example, start to finish (e.g. push a specific
+named object, pop it, then act on that same object) -- not three unrelated abstract actions.
 
 User question:
 {question.strip()}
@@ -182,14 +275,27 @@ Learning content:
         body = section.get("body") if isinstance(section, dict) else None
         if not isinstance(heading, str) or not heading.strip() or not isinstance(body, str) or not body.strip():
             raise AnswerGenerationError("Gemini returned an invalid explanation section")
-        sections.append({"heading": heading.strip(), "body": body.strip()})
+        # A subideaId outside the closed set (Gemini drifting, or no
+        # subideas supplied at all) is dropped rather than failing the whole
+        # explanation -- this tagging is supplementary instrumentation, not
+        # something the student-facing explanation should ever break over.
+        raw_subidea_id = section.get("subideaId") if isinstance(section, dict) else None
+        subidea_id = raw_subidea_id if raw_subidea_id in valid_subidea_ids else None
 
-    check_question = parsed.get("checkQuestion")
-    check_question = check_question.strip() if isinstance(check_question, str) and check_question.strip() else None
+        check_question = section.get("checkQuestion")
+        check_question = check_question.strip() if isinstance(check_question, str) and check_question.strip() else None
 
-    raw_steps = parsed.get("solveSteps")
-    solve_steps = None
-    if isinstance(raw_steps, list) and all(isinstance(step, str) and step.strip() for step in raw_steps):
-        solve_steps = [step.strip() for step in raw_steps]
+        raw_steps = section.get("solveSteps")
+        solve_steps = None
+        if isinstance(raw_steps, list) and all(isinstance(step, str) and step.strip() for step in raw_steps):
+            solve_steps = [step.strip() for step in raw_steps]
 
-    return {"sections": sections, "checkQuestion": check_question, "solveSteps": solve_steps}
+        sections.append({
+            "heading": heading.strip(),
+            "body": body.strip(),
+            "subideaId": subidea_id,
+            "checkQuestion": check_question,
+            "solveSteps": solve_steps,
+        })
+
+    return {"sections": sections}

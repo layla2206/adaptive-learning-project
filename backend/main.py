@@ -117,6 +117,7 @@ _MOCK_GEMINI_FIXTURES = [
     # needs its own marker rather than falling through to quiz's or the
     # generic '"correct_answer"' diagnostic fixture below.
     ("comprehensive final exam", '[{"question_text": "Mock final exam Q1?", "options": ["A", "B", "C", "D"], "correct_answer": "A", "difficulty": "Medium"}, {"question_text": "Mock final exam Q2?", "options": ["A", "B", "C", "D"], "correct_answer": "B", "difficulty": "Medium"}, {"question_text": "Mock final exam Q3?", "options": ["A", "B", "C", "D"], "correct_answer": "C", "difficulty": "Medium"}]'),
+    ("Break the topic below into its real sub-ideas", '[{"label": "Mock Sub-idea 1", "description": "Covers the first mock mechanism."}, {"label": "Mock Sub-idea 2", "description": "Covers the second mock mechanism."}, {"label": "Mock Sub-idea 3", "description": "Covers the third mock mechanism."}, {"label": "Mock Sub-idea 4", "description": "Covers the fourth mock mechanism."}]'),
     ('"correct_answer"', '[{"question_text": "Mock diagnostic question 1?", "options": ["A", "B", "C", "D"], "correct_answer": "A", "difficulty": "Medium"}, {"question_text": "Mock diagnostic question 2?", "options": ["A", "B", "C", "D"], "correct_answer": "B", "difficulty": "Medium"}]'),
     ("Write open-ended, worked-style problems", '[{"question_text": "Mock practice question 1?", "difficulty": "Medium", "model_answer": "Mock worked solution, step by step."}, {"question_text": "Mock practice question 2?", "difficulty": "Medium", "model_answer": "Mock worked solution, step by step."}]'),
     ('got a basic question about "', '{"explanation": "Mock foundations explanation for testing."}'),
@@ -893,21 +894,20 @@ def get_recent_session_messages(session_id: str, limit: int = 10) -> List[dict]:
     return list(reversed(messages.data or []))
 
 
-def get_session_cited_chunk_ids(session_id: str) -> List[str]:
-    """Every chunk_id ever cited to this student in this session, in first-
-    seen order -- the source-of-truth set for grading, so /mastery/check
-    never contradicts content /query actually showed during Explain. Reuses
-    session_messages.metadata.citations (already stored by /query and
-    /retry/generate) rather than re-retrieving, which is what let grading
-    silently pull a different slice of the topic's chunks than the student
-    was ever shown."""
-    rows = (
-        supabase.table("session_messages")
-        .select("metadata")
-        .eq("session_id", session_id)
-        .eq("sender", "ai")
-        .execute()
-    )
+def get_session_cited_chunk_ids(session_id: str, subidea_id: Optional[str] = None) -> List[str]:
+    """Every chunk_id ever cited to this student in this session for a given
+    sub-idea, in first-seen order -- the source-of-truth set for grading, so
+    /mastery/check never contradicts content /query actually showed for that
+    sub-idea's explanation. Reuses session_messages.metadata.citations
+    (already stored by /query and /retry/generate) rather than
+    re-retrieving, which is what let grading silently pull a different slice
+    of the topic's chunks than the student was ever shown. subidea_id=None
+    falls back to every citation in the session (topics with no sub-idea
+    breakdown yet)."""
+    query = supabase.table("session_messages").select("metadata").eq("session_id", session_id).eq("sender", "ai")
+    if subidea_id:
+        query = query.eq("metadata->>subideaId", subidea_id)
+    rows = query.execute()
     ids: List[str] = []
     seen = set()
     for row in rows.data or []:
@@ -925,15 +925,78 @@ def format_session_context(messages: List[dict]) -> str:
     return "\n".join(f"{message.get('sender', 'unknown')}: {message.get('message_text', '')}" for message in messages)
 
 
-def count_session_hints(session_id: str) -> int:
-    messages = (
-        supabase.table("session_messages")
-        .select("metadata")
-        .eq("session_id", session_id)
-        .eq("sender", "ai")
+def get_topic_progress(student_id: str, topic_id: str) -> dict:
+    """Authoritative "where is this student right now" for a topic -- one
+    row per (student, topic), read directly rather than inferred from
+    session_messages tags (proven fragile: a runaway follow-up answer was
+    once mistaken for a second completed explanation). Defaults to the
+    start state if /query's full-explanation call hasn't created one yet
+    (e.g. /mastery/check called cold)."""
+    res = (
+        supabase.table("topic_progress")
+        .select("subidea_index, stage, hints_used")
+        .eq("student_id", student_id)
+        .eq("topic_id", topic_id)
+        .maybe_single()
         .execute()
     )
-    return sum(1 for m in (messages.data or []) if (m.get("metadata") or {}).get("tag") == "Hint")
+    if res and res.data:
+        return res.data
+    return {"subidea_index": 0, "stage": "explain", "hints_used": 0}
+
+
+def set_topic_progress(student_id: str, topic_id: str, subidea_index: int, stage: str, hints_used: int) -> None:
+    supabase.table("topic_progress").upsert({
+        "student_id": student_id,
+        "topic_id": topic_id,
+        "subidea_index": subidea_index,
+        "stage": stage,
+        "hints_used": hints_used,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+
+
+def recompute_topic_mastery(student_id: str, topic_id: str) -> tuple:
+    """Averages each RESOLVED sub-idea's latest overall_mastery into one
+    topic-level mastery_percent, and reports whether every sub-idea has been
+    resolved (passed OR its retry-check was submitted, win or lose -- the
+    "advance anyway on final failure" rule means a sub-idea resolves without
+    necessarily being passed). Topics with no sub-idea breakdown fall back
+    to the single topic-wide mastery_checks row, matching pre-sub-idea
+    behavior exactly."""
+    rows = (
+        supabase.table("mastery_checks")
+        .select("subidea_id, overall_mastery, passed, solve_score, checked_at")
+        .eq("student_id", student_id)
+        .eq("topic_id", topic_id)
+        .order("checked_at")
+        .execute()
+    ).data or []
+    if not rows:
+        return 0.0, False
+
+    # Read-only: whether to average per sub-idea depends on whether a
+    # breakdown already exists, not on generating one right now as a side
+    # effect of computing a stat.
+    subideas = get_existing_subideas(topic_id)
+    if not subideas:
+        latest = rows[-1]
+        return float(latest["overall_mastery"]), bool(latest["passed"])
+
+    latest_resolved_by_subidea: dict = {}
+    for row in rows:
+        sid = row.get("subidea_id")
+        if not sid:
+            continue
+        resolved = row["passed"] or row.get("solve_score") is not None
+        if resolved:
+            latest_resolved_by_subidea[sid] = row  # chronological order -- last write wins
+
+    if not latest_resolved_by_subidea:
+        return 0.0, False
+    avg = sum(float(r["overall_mastery"]) for r in latest_resolved_by_subidea.values()) / len(latest_resolved_by_subidea)
+    all_resolved = len(latest_resolved_by_subidea) >= len(subideas)
+    return avg, all_resolved
 
 
 def generate_hint(chunks: List[dict], student_answer: str, feedback: str) -> Optional[str]:
@@ -975,6 +1038,11 @@ class MasteryCheckRequest(BaseModel):
     session_id: Optional[str] = None
     explanation: Optional[str] = None
     solution: Optional[str] = None
+    # The sub-idea this check is for. Required once a topic has a sub-idea
+    # breakdown (essentially always -- get_or_generate_subideas runs lazily
+    # on first use); left null only for the rare topic with no content yet,
+    # which falls back to the old topic-wide behavior.
+    subidea_id: Optional[str] = None
 
 
 @app.post("/mastery/check")
@@ -986,29 +1054,31 @@ async def check_mastery(req: MasteryCheckRequest):
 
     try:
         session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
-        # Grade against the exact chunks this student was actually shown in
-        # this session (via /query's or /retry/generate's citations) --
+        # Grade against the exact chunks this student was actually shown for
+        # THIS sub-idea (via /query's or /retry/generate's citations) --
         # falling back to an arbitrary topic-wide fetch only when there's no
         # prior Explain to anchor to (e.g. mastery/check called cold). Grading
-        # against a fresh, independent topic-wide fetch used to let the AI
-        # reject wording the app itself had just used, since the two calls
-        # could easily land on different chunks.
-        cited_chunk_ids = get_session_cited_chunk_ids(session_id)
+        # against a fresh, independent fetch used to let the AI reject
+        # wording the app itself had just used, since the two calls could
+        # easily land on different chunks.
+        cited_chunk_ids = get_session_cited_chunk_ids(session_id, req.subidea_id)
         if cited_chunk_ids:
             chunks_res = supabase.table("chunks").select("chunk_text").in_("chunk_id", cited_chunk_ids).execute()
         else:
-            chunks_res = supabase.table("chunks").select("chunk_text").eq("topic_id", req.topic_id).limit(8).execute()
+            chunks_res = supabase.table("chunks").select("chunk_text").eq("topic_id", req.topic_id).limit(500).execute()
         if not chunks_res.data:
             raise HTTPException(status_code=422, detail="No learning content found for this topic")
 
         recent_messages = get_recent_session_messages(session_id)
-        checks = (
+        checks_query = (
             supabase.table("mastery_checks")
             .select("mastery_id", count="exact", head=True)
             .eq("student_id", req.student_id)
             .eq("topic_id", req.topic_id)
-            .execute()
         )
+        if req.subidea_id:
+            checks_query = checks_query.eq("subidea_id", req.subidea_id)
+        checks = checks_query.execute()
         attempt_number = (checks.count or 0) + 1
         submissions = []
         if explanation:
@@ -1058,33 +1128,45 @@ Student submissions:
             "student_id": req.student_id,
             "topic_id": req.topic_id,
             "session_id": session_id,
+            "subidea_id": req.subidea_id,
             "question_text": label,
             "student_answer": text,
             "score": explain_score if score_field == "explain_score" else solve_score,
             "mistake_tag": mistake_tag,
         } for score_field, label, text in submissions]
         supabase.table("student_answers").insert(answer_rows).execute()
+        mastery_id = short_id("mst")
         supabase.table("mastery_checks").insert({
-            "mastery_id": short_id("mst"),
+            "mastery_id": mastery_id,
             "student_id": req.student_id,
             "topic_id": req.topic_id,
+            "subidea_id": req.subidea_id,
             "attempt_number": attempt_number,
             "explain_score": explain_score,
             "solve_score": solve_score,
             "overall_mastery": overall_mastery,
             "passed": passed,
         }).execute()
+
+        # A retry-check submission (has `solution`) always resolves this
+        # sub-idea -- win or lose, the student advances to the next one
+        # rather than being blocked. Only a first-pass failure
+        # (`explanation` only) with hints/retry still available stays on
+        # the same sub-idea.
+        is_retry_check = bool(solution)
+
+        topic_mastery_percent, _all_resolved = recompute_topic_mastery(req.student_id, req.topic_id)
         weak_area = mistake_tag if (not passed and mistake_tag != "none") else None
         supabase.table("student_profiles").upsert({
             "student_id": req.student_id,
             "topic_id": req.topic_id,
-            "mastery_percent": overall_mastery,
-            "level": level_for_mastery(overall_mastery),
+            "mastery_percent": topic_mastery_percent,
+            "level": level_for_mastery(topic_mastery_percent),
             "weak_area": weak_area,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
 
-        pending = (
+        pending_query = (
             supabase.table("retry_attempts")
             .select("retry_id")
             .eq("student_id", req.student_id)
@@ -1092,32 +1174,68 @@ Student submissions:
             .is_("result", "null")
             .order("attempted_at", desc=True)
             .limit(1)
-            .execute()
         )
+        if req.subidea_id:
+            pending_query = pending_query.eq("subidea_id", req.subidea_id)
+        pending = pending_query.execute()
         if pending.data:
             supabase.table("retry_attempts").update({"result": "Passed" if passed else "Failed"}).eq("retry_id", pending.data[0]["retry_id"]).execute()
-        # A retry-check submission (has `solution`) is always terminal on the frontend,
-        # win or lose -- only a first-pass failure (`explanation` only) leads into a retry.
-        is_retry_check = bool(solution)
 
         hint_text = None
         hints_used = None
-        if not passed and not is_retry_check:
-            prior_hints = count_session_hints(session_id)
-            if prior_hints < MAX_HINT_ATTEMPTS:
-                hint_text = generate_hint(chunks_res.data, explanation, feedback)
-                if hint_text:
-                    hints_used = prior_hints + 1
+        advanced = False
+        topic_done = False
 
+        # Progress bookkeeping only applies to a sub-idea-scoped check -- a
+        # legacy/cold call with no subidea_id has no sub-idea context to
+        # advance from, and skipping this avoids an unrelated Gemini call
+        # (generating a sub-idea breakdown just to count sub-ideas) as a
+        # surprising side effect of grading.
+        if req.subidea_id:
+            progress = get_topic_progress(req.student_id, req.topic_id)
+            subideas = get_or_generate_subideas(req.topic_id)
+
+            if is_retry_check or passed:
+                # Advance regardless of outcome on a retry-check (the
+                # "advance anyway" rule) -- a failed retry-check is still
+                # recorded above via mastery_checks(passed=false), which is
+                # what makes it show as a gap in instructor insights.
+                next_index = progress["subidea_index"] + 1
+                if subideas and next_index < len(subideas):
+                    set_topic_progress(req.student_id, req.topic_id, next_index, "explain", 0)
+                    advanced = True
+                else:
+                    set_topic_progress(req.student_id, req.topic_id, progress["subidea_index"], "done", 0)
+                    topic_done = True
+            else:
+                prior_hints = progress["hints_used"]
+                if prior_hints < MAX_HINT_ATTEMPTS:
+                    hint_text = generate_hint(chunks_res.data, explanation, feedback)
+                    if hint_text:
+                        hints_used = prior_hints + 1
+                        set_topic_progress(req.student_id, req.topic_id, progress["subidea_index"], "check", hints_used)
+                if not hint_text:
+                    # Hints exhausted (or hint generation failed) -- the
+                    # frontend moves to /retry/generate next.
+                    set_topic_progress(req.student_id, req.topic_id, progress["subidea_index"], "retry", prior_hints)
+        elif not passed:
+            # Legacy/no-subidea-context path -- no persisted hint counter to
+            # check against, so just offer one hint attempt.
+            hint_text = generate_hint(chunks_res.data, explanation, feedback)
+            if hint_text:
+                hints_used = 1
+
+        subidea_metadata = {"subideaId": req.subidea_id} if req.subidea_id else {}
         if hint_text:
             append_session_message(session_id, "ai", f"{feedback}\n\n{hint_text}", metadata={
                 "tag": "Hint",
                 "hintsUsed": hints_used,
                 "maxHints": MAX_HINT_ATTEMPTS,
+                **subidea_metadata,
             })
         else:
             feedback_tag = "Result" if (is_retry_check or passed) else "Feedback"
-            append_session_message(session_id, "ai", feedback, metadata={"tag": feedback_tag})
+            append_session_message(session_id, "ai", feedback, metadata={"tag": feedback_tag, **subidea_metadata})
 
         return {
             "sessionId": session_id,
@@ -1129,6 +1247,9 @@ Student submissions:
             "hint": hint_text,
             "hintsUsed": hints_used,
             "maxHints": MAX_HINT_ATTEMPTS if hint_text else None,
+            "advanced": advanced,
+            "topicDone": topic_done,
+            "topicMasteryPercent": topic_mastery_percent,
         }
     except HTTPException:
         raise
@@ -1145,6 +1266,11 @@ class RetryGenerateRequest(BaseModel):
     student_id: str
     topic_id: str
     session_id: Optional[str] = None
+    # The sub-idea being retried -- scopes both the format-cycling attempt
+    # count and the content itself to just this one sub-idea, not the whole
+    # topic. See generate_answer's docstring for why unscoped content
+    # generation goes wrong (same failure mode as the follow-up bug).
+    subidea_id: Optional[str] = None
 
 
 RETRY_FORMATS = ["Worked Example", "Hands-on Task", "Analogy", "Diagram", "Mind Map"]
@@ -1171,14 +1297,40 @@ RETRY_FORMAT_INSTRUCTIONS = {
 async def generate_retry(req: RetryGenerateRequest):
     try:
         session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
-        retries = (
+        retries_query = (
             supabase.table("retry_attempts")
             .select("retry_id", count="exact", head=True)
             .eq("student_id", req.student_id)
             .eq("topic_id", req.topic_id)
-            .execute()
         )
+        if req.subidea_id:
+            retries_query = retries_query.eq("subidea_id", req.subidea_id)
+        retries = retries_query.execute()
         attempt_number = (retries.count or 0) + 1
+
+        # The sub-idea's own already-generated explanation (heading+body),
+        # if there is one -- anchors the retry content to just this
+        # mechanism instead of the whole topic, same technique as the
+        # follow-up fix (generate_answer's current_section param).
+        current_section_text = None
+        current_section_heading = None
+        if req.subidea_id:
+            section_res = (
+                supabase.table("session_messages")
+                .select("metadata, message_text")
+                .eq("session_id", session_id)
+                .eq("sender", "ai")
+                .eq("metadata->>subideaId", req.subidea_id)
+                .eq("metadata->>tag", "Grounded Explanation")
+                .order("timestamp")
+                .limit(1)
+                .execute()
+            )
+            if section_res.data:
+                row = section_res.data[0]
+                heading = (row.get("metadata") or {}).get("heading")
+                current_section_text = f"{heading}\n\n{row['message_text']}" if heading else row["message_text"]
+                current_section_heading = heading
         pref_res = (
             supabase.table("students")
             .select("preferred_explanation_format")
@@ -1195,23 +1347,36 @@ async def generate_retry(req: RetryGenerateRequest):
             formats = RETRY_FORMATS[idx:] + RETRY_FORMATS[:idx]
         format_used = formats[(attempt_number - 1) % len(formats)]
         is_diagram_format = format_used in RETRY_DIAGRAM_FORMATS
-        chunks_res = (
-            supabase.table("chunks")
-            .select("chunk_id, document_id, chunk_text, page_number, documents(file_name)")
-            .eq("topic_id", req.topic_id)
-            .limit(8)
-            .execute()
-        )
-        if not chunks_res.data:
-            raise HTTPException(status_code=422, detail="No learning content found for this topic")
-
+        # Retrieved via real semantic search, anchored on the sub-idea's own
+        # label (the heading fetched above) -- same fix as the /query
+        # follow-up path, and for the same two reasons: a raw LIMIT fetch is
+        # an arbitrary, possibly-irrelevant slice of the topic, and a wide
+        # enough LIMIT to reliably cover the right content is slow enough to
+        # risk the same timeout the follow-up path hit. top_k few
+        # semantically-relevant chunks solves both at once.
+        # Falls back to the old direct topic-scoped fetch when there's no
+        # label to anchor on (no subidea_id / no prior explanation found yet)
+        # or retrieval comes back empty (embedding/RPC failure).
         chunks = []
-        for chunk in chunks_res.data:
-            document = chunk.get("documents") or {}
-            chunks.append(map_chunk({
-                **chunk,
-                "document_title": document.get("file_name"),
-            }))
+        if current_section_heading:
+            chunks = await retrieve_context(current_section_heading, topic_id=req.topic_id, top_k=15)
+        if not chunks:
+            chunks_res = (
+                supabase.table("chunks")
+                .select("chunk_id, document_id, chunk_text, page_number, documents(file_name)")
+                .eq("topic_id", req.topic_id)
+                .limit(40)
+                .execute()
+            )
+            if not chunks_res.data:
+                raise HTTPException(status_code=422, detail="No learning content found for this topic")
+
+            for chunk in chunks_res.data:
+                document = chunk.get("documents") or {}
+                chunks.append(map_chunk({
+                    **chunk,
+                    "document_title": document.get("file_name"),
+                }))
 
         format_instruction = RETRY_FORMAT_INSTRUCTIONS[format_used]
         citation_instruction = (
@@ -1223,11 +1388,21 @@ async def generate_retry(req: RetryGenerateRequest):
                 "IDs included below."
             )
         )
-        prompt = f"""Create a retry intervention for the topic using only the learning content below.
+        section_block = (
+            f"""
+You are re-explaining ONLY this specific sub-idea, which the student already saw explained once in a
+way that didn't land -- do not cover any other part of the topic:
+\"\"\"
+{current_section_text}
+\"\"\"
+"""
+            if current_section_text else ""
+        )
+        prompt = f"""Create a retry intervention using only the learning content below.
 Format: {format_used}. {format_instruction}
 Return ONLY strict JSON: {{"content": "...", "citedChunkIds": ["chunk_id", ...]}}
 {citation_instruction}
-
+{section_block}
 Learning content:
 {chr(10).join(f"[{chunk['chunk_id']}] {chunk['chunk_text']}" for chunk in chunks)}"""
         response = gemini_client.models.generate_content(
@@ -1268,16 +1443,20 @@ Learning content:
             "retry_id": short_id("rty"),
             "student_id": req.student_id,
             "topic_id": req.topic_id,
+            "subidea_id": req.subidea_id,
             "attempt_number": attempt_number,
             "format_used": format_used,
             "result": None,
         }).execute()
-        append_session_message(session_id, "ai", content, metadata={
+        retry_metadata = {
             "tag": format_used,
             "isDiagram": is_diagram_format,
             "diagram": content if is_diagram_format else None,
             "citations": citations,
-        })
+        }
+        if req.subidea_id:
+            retry_metadata["subideaId"] = req.subidea_id
+        append_session_message(session_id, "ai", content, metadata=retry_metadata)
         return {
             "sessionId": session_id,
             "format": format_used,
@@ -1549,6 +1728,98 @@ async def advance_foundations(req: FoundationsAdvanceReq):
     except Exception as exc:
         print("Foundations Advance Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to advance foundations gate") from exc
+
+
+# ==========================================
+# TOPIC SUB-IDEA BREAKDOWN (auto-generated, once per topic)
+# ==========================================
+# Breaks a topic into its real sub-ideas (e.g. Stacks -> array-based
+# implementation, isFull/isEmpty checks, push/pop) so per-sub-idea
+# understanding can be tracked instead of one opaque topic-level mastery
+# percent. Prototype-stage: generated lazily and used immediately the first
+# time a topic is actually needed (its first full explanation, or a cold
+# mastery-check with no prior explain) -- no instructor review/publish
+# step. One Gemini call per topic, ever; every later call just re-reads the
+# stored rows.
+
+SUBIDEA_MIN_COUNT = 4
+SUBIDEA_MAX_COUNT = 8
+
+
+def get_existing_subideas(topic_id: str) -> List[dict]:
+    """Read-only lookup -- never triggers generation. Used wherever "does
+    this topic currently have a sub-idea breakdown" matters but generating
+    one as a side effect would be surprising (e.g. computing an aggregate
+    stat shouldn't spend a Gemini call)."""
+    existing = (
+        supabase.table("topic_subideas")
+        .select("subidea_id, label")
+        .eq("topic_id", topic_id)
+        .order("idea_index")
+        .execute()
+    )
+    return existing.data or []
+
+
+def get_or_generate_subideas(topic_id: str) -> List[dict]:
+    existing = get_existing_subideas(topic_id)
+    if existing:
+        return existing
+
+    # The full topic's chunks, not an arbitrary slice -- a sub-idea list
+    # drawn from only part of the material can name sub-ideas the full
+    # explanation (which now also sees the whole topic, see /query) has no
+    # trouble grounding, but a list drawn from a DIFFERENT partial slice
+    # than the explanation sees is what caused sub-ideas with no real
+    # grounding at all. Same limit as the explanation's own fetch.
+    chunks_res = supabase.table("chunks").select("chunk_text").eq("topic_id", topic_id).limit(500).execute()
+    if not chunks_res.data:
+        return []  # No content yet to break down -- callers treat this the same as "no sub-ideas".
+
+    prompt = f"""Break the topic below into its real sub-ideas -- the distinct mechanisms, checks, or
+operations a student actually has to understand, not a generic outline. For example, for a "Stacks"
+topic: array-based implementation, isFull/isEmpty checks, push/pop operations -- not "Introduction" or
+"Summary".
+Each sub-idea MUST be something the content below explicitly names, defines, or walks through as its
+own topic -- not a category or comparison you infer by grouping unrelated pieces together (e.g. do NOT
+invent a label like "Internal vs. External X" just because the content happens to mention both an
+internal detail and an external interface somewhere; only do that if the content itself explicitly
+draws that comparison). Every sub-idea will later be explained on its own, strictly grounded in this
+same content, so a label the content doesn't actually support produces a broken explanation.
+Return ONLY a JSON array of {SUBIDEA_MIN_COUNT}-{SUBIDEA_MAX_COUNT} objects, ordered the way a student
+would naturally encounter them, with this exact schema, nothing else (no markdown blocks, no intro):
+[
+  {{"label": "A short, specific sub-idea name (a few words)", "description": "One sentence on what it covers"}}
+]
+
+Learning content:
+{chr(10).join(c['chunk_text'] for c in chunks_res.data)}"""
+
+    try:
+        response = _generate_content_with_retry(prompt)
+        items = json.loads(response.text)
+    except Exception as exc:
+        print("Subidea Generate Error:", exc)
+        return []  # Best-effort -- a topic just stays untagged rather than failing the caller's real request.
+
+    if not isinstance(items, list) or not (SUBIDEA_MIN_COUNT <= len(items) <= SUBIDEA_MAX_COUNT):
+        return []
+    valid_items = [
+        item for item in items
+        if isinstance(item, dict) and isinstance(item.get("label"), str) and item["label"].strip()
+    ]
+    if len(valid_items) != len(items):
+        return []
+
+    rows = [{
+        "subidea_id": short_id("sub", 20),
+        "topic_id": topic_id,
+        "idea_index": i,
+        "label": item["label"].strip(),
+        "description": item["description"].strip() if isinstance(item.get("description"), str) else None,
+    } for i, item in enumerate(valid_items)]
+    supabase.table("topic_subideas").insert(rows).execute()
+    return [{"subidea_id": r["subidea_id"], "label": r["label"]} for r in rows]
 
 
 # ==========================================
@@ -1961,40 +2232,115 @@ class QueryRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
     # True only for the one-time "explain this topic from the ground up"
-    # request -- switches to generate_structured_explanation so the answer
-    # comes back pre-split into Continue-paced sections plus a topic-specific
-    # mastery-check question, instead of one plain-text blob. Every other
-    # call (a normal follow-up question) is unaffected.
+    # request, called once right after Diagnose. Generates ALL of the
+    # topic's sub-idea sections in one Gemini call (see
+    # generate_structured_explanation) and persists one session_messages row
+    # per sub-idea -- the per-sub-idea explain/check/hint/retry loop then
+    # sequences through them one at a time. Never called again for the same
+    # topic/session -- resume reads the already-generated sections back via
+    # /topic/resume instead of regenerating them.
     full_explanation: bool = False
+    # Only meaningful on a follow-up call (full_explanation=False): the
+    # subideaId of the sub-idea currently on screen. Absent/invalid is fine
+    # -- the follow-up is just tagged untagged rather than rejected.
+    subidea_id: Optional[str] = None
+    # Only meaningful on a follow-up call: the heading+body of the current
+    # sub-idea's section, so generate_answer can anchor a vague "explain
+    # more"/"why" to that section instead of the whole topic. See
+    # generate_answer's docstring for the runaway-answer bug this prevents.
+    current_section_text: Optional[str] = None
 
 
 @app.post("/query")
 async def query_content(req: QueryRequest):
-    # Temporary timing breakdown -- a request to this endpoint took 82s in
-    # production with no indication of which step was slow (no retry/backoff
-    # path exists here, so the delay has to be one of these calls itself
-    # hanging). Remove once the slow step is identified.
     t0 = time.perf_counter()
     try:
         session_id = get_or_create_session(req.student_id, req.topic_id, req.session_id)
         t1 = time.perf_counter()
-        chunks = await retrieve_context(req.question, topic_id=req.topic_id, course_id=req.course_id)
+        if req.full_explanation:
+            # One-time "explain this topic from the ground up" call -- this
+            # now has to cover the WHOLE topic across every sub-idea, not
+            # just whatever's most relevant to one narrow question, so it
+            # pulls the topic's full chunk set directly (same as
+            # get_or_generate_subideas and the follow-up branch below)
+            # rather than retrieve_context's embedding-similarity top-K
+            # search. top_k defaults to 5 there -- fine for a single
+            # follow-up question, but on a topic with 100+ chunks it starved
+            # most sub-ideas of any grounding at all, producing "I don't
+            # have enough context" for sub-ideas whose content just didn't
+            # happen to be among the 5 closest matches to the generic
+            # "explain this from the ground up" query.
+            chunks_res = (
+                supabase.table("chunks")
+                .select("chunk_id, chunk_text, document_id, page_number")
+                .eq("topic_id", req.topic_id)
+                .limit(500)
+                .execute()
+            )
+            chunks = [map_chunk(c) for c in (chunks_res.data or [])]
+        else:
+            # Follow-up question about content the student was just shown for
+            # this topic (e.g. "explain more", "why") -- retrieved via real
+            # semantic search (retrieve_context) instead of an arbitrary
+            # unordered slice of the topic's chunks. Anchored on the current
+            # sub-idea's own label (not the follow-up's own wording, which is
+            # often vague/pronoun-heavy -- "why", "explain more") combined
+            # with the question, so the top-K result stays on-topic even when
+            # the question alone wouldn't embed near anything useful. This
+            # also fixes the earlier latency problem for free: top_k few
+            # chunks is inherently far cheaper per prompt than any fixed
+            # LIMIT wide enough to reliably include the right content, so
+            # there's no more tension between "wide enough to be relevant"
+            # and "narrow enough to stay fast" (a live 502 on a 24s-plus
+            # request came from exactly that tension). generate_answer's
+            # current_section param remains the primary fix for "explain
+            # again"-style follow-ups (the section's own text, always
+            # available and always relevant) -- this fetch is supplementary
+            # grounding for follow-ups that reach beyond the current section.
+            #
+            # Falls back to a direct topic-scoped fetch if retrieval comes
+            # back empty (embedding/RPC failure, or no sub-idea context to
+            # anchor on yet) so a transient retrieval failure doesn't regress
+            # to "no context".
+            subidea_label = None
+            if req.subidea_id:
+                subidea_label = next(
+                    (s["label"] for s in get_existing_subideas(req.topic_id) if s["subidea_id"] == req.subidea_id),
+                    None,
+                )
+            retrieval_query = f"{subidea_label}: {req.question}" if subidea_label else req.question
+            chunks = await retrieve_context(retrieval_query, topic_id=req.topic_id, course_id=req.course_id, top_k=15)
+            if not chunks:
+                chunks_res = (
+                    supabase.table("chunks")
+                    .select("chunk_id, chunk_text, document_id, page_number")
+                    .eq("topic_id", req.topic_id)
+                    .limit(40)
+                    .execute()
+                )
+                chunks = [map_chunk(c) for c in (chunks_res.data or [])]
         t2 = time.perf_counter()
-        print(f"      /query timing -- get_or_create_session={t1 - t0:.2f}s retrieve_context={t2 - t1:.2f}s")
+        print(f"      /query timing -- get_or_create_session={t1 - t0:.2f}s fetch_chunks={t2 - t1:.2f}s")
 
-        check_question = None
-        solve_steps = None
         try:
             if req.full_explanation:
-                structured = generate_structured_explanation(req.question, chunks, gemini_client)
-                if structured == NO_CONTEXT_ANSWER:
-                    raw_answer = NO_CONTEXT_ANSWER
-                else:
-                    raw_answer = "\n\n".join(f"### {s['heading']}\n\n{s['body']}" for s in structured["sections"])
-                    check_question = structured["checkQuestion"]
-                    solve_steps = structured["solveSteps"]
+                subideas = get_or_generate_subideas(req.topic_id)
+                structured = generate_structured_explanation(req.question, chunks, gemini_client, subideas=subideas)
             else:
-                raw_answer = generate_answer(req.question, chunks, gemini_client)
+                # Prior turns (the original explanation, earlier follow-ups)
+                # so a meta-reference like "explain more" or "why" resolves
+                # to something -- without this the model has the topic's
+                # content but no idea what "more" means and (correctly, per
+                # its own prompt instructions) says it lacks context.
+                recent = get_recent_session_messages(session_id)
+                conversation_context = format_session_context(recent) if recent else None
+                raw_answer = generate_answer(
+                    req.question,
+                    chunks,
+                    gemini_client,
+                    conversation_context=conversation_context,
+                    current_section=req.current_section_text,
+                )
             print(f"      /query timing -- generate_answer={time.perf_counter() - t2:.2f}s")
         except AnswerGenerationError as exc:
             # generate_answer()/generate_structured_explanation() (answer_generation.py)
@@ -2008,23 +2354,75 @@ async def query_content(req: QueryRequest):
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
         t3 = time.perf_counter()
+
+        if req.full_explanation:
+            if structured == NO_CONTEXT_ANSWER:
+                append_session_message(session_id, "student", req.question)
+                append_session_message(session_id, "ai", NO_CONTEXT_ANSWER, metadata={"tag": "Grounded Explanation", "citations": []})
+                return {"sessionId": session_id, "sections": [], "noContext": True}
+
+            append_session_message(session_id, "student", req.question)
+            sections_out = []
+            for i, s in enumerate(structured["sections"]):
+                # Renumbered independently per section (not across the whole
+                # explanation) -- each sub-idea is now its own self-contained
+                # mini-lesson, so its citation markers restart at [1].
+                body, citations = renumber_inline_citations(s["body"], chunks)
+                metadata = {
+                    "tag": "Grounded Explanation",
+                    "heading": s["heading"],
+                    "citations": citations,
+                    "subideaId": s["subideaId"],
+                    "subideaIndex": i,
+                    "checkQuestion": s["checkQuestion"],
+                    "solveSteps": s["solveSteps"],
+                }
+                append_session_message(session_id, "ai", body, metadata=metadata)
+                sections_out.append({
+                    "heading": s["heading"],
+                    "body": body,
+                    "citations": citations,
+                    "subideaId": s["subideaId"],
+                    "checkQuestion": s["checkQuestion"],
+                    "solveSteps": s["solveSteps"],
+                })
+
+            supabase.table("topic_progress").upsert({
+                "student_id": req.student_id,
+                "topic_id": req.topic_id,
+                "subidea_index": 0,
+                "stage": "explain",
+                "hints_used": 0,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).execute()
+
+            print(f"      /query timing -- append_messages={time.perf_counter() - t3:.2f}s total={time.perf_counter() - t0:.2f}s")
+            return {"sessionId": session_id, "sections": sections_out}
+
+        # Follow-up path (unchanged shape from before, just always tagged).
         if raw_answer == NO_CONTEXT_ANSWER or not chunks:
             append_session_message(session_id, "student", req.question)
-            append_session_message(session_id, "ai", raw_answer, metadata={"tag": "Grounded Explanation", "citations": []})
+            append_session_message(session_id, "ai", raw_answer, metadata={"tag": "Grounded Explanation", "citations": [], "isFollowUp": True})
             print(f"      /query timing -- append_messages={time.perf_counter() - t3:.2f}s total={time.perf_counter() - t0:.2f}s")
-            return {"sessionId": session_id, "answer": raw_answer, "citations": [], "checkQuestion": None, "solveSteps": None}
+            return {"sessionId": session_id, "answer": raw_answer, "citations": []}
 
         answer, citations = renumber_inline_citations(raw_answer, chunks)
 
-        metadata = {"tag": "Grounded Explanation", "citations": citations}
-        if check_question:
-            metadata["checkQuestion"] = check_question
-        if solve_steps:
-            metadata["solveSteps"] = solve_steps
-        append_session_message(session_id, "student", req.question)
+        metadata = {"tag": "Grounded Explanation", "citations": citations, "isFollowUp": True}
+        student_metadata = None
+        if req.subidea_id:
+            # Validate against the topic's known set rather than trusting
+            # the client outright -- a stale/invalid id (e.g. the topic's
+            # sub-idea list changed mid-session) is dropped rather than
+            # mis-tagging the follow-up.
+            valid_subidea_ids = {s["subidea_id"] for s in get_existing_subideas(req.topic_id)}
+            if req.subidea_id in valid_subidea_ids:
+                metadata["subideaId"] = req.subidea_id
+                student_metadata = {"subideaId": req.subidea_id}
+        append_session_message(session_id, "student", req.question, metadata=student_metadata)
         append_session_message(session_id, "ai", answer, metadata=metadata)
         print(f"      /query timing -- append_messages={time.perf_counter() - t3:.2f}s total={time.perf_counter() - t0:.2f}s")
-        return {"sessionId": session_id, "answer": answer, "citations": citations, "checkQuestion": check_question, "solveSteps": solve_steps}
+        return {"sessionId": session_id, "answer": answer, "citations": citations}
     except HTTPException:
         raise
     except Exception as exc:
@@ -2063,6 +2461,107 @@ async def session_history(req: SessionHistoryRequest):
     except Exception as exc:
         print("Session History Error:", exc)
         raise HTTPException(status_code=500, detail="Unable to load session history") from exc
+
+
+class TopicResumeRequest(BaseModel):
+    student_id: str
+    topic_id: str
+
+
+@app.post("/topic/resume")
+async def topic_resume(req: TopicResumeRequest):
+    """Everything the topic page needs to land back exactly where a student
+    left off: which sub-idea, which stage, how many hints already used, the
+    already-generated sections (so a resume never re-triggers Gemini), and
+    the current sub-idea's own chat transcript (each sub-idea's
+    conversation is scoped to itself, not shown mixed with the others).
+    Reads topic_progress directly rather than inferring a stage from the
+    last session_messages tag -- that inference proved fragile (a runaway
+    follow-up answer was once mistaken for a second completed explanation).
+
+    Deliberately not TTL-gated like find_active_session/SESSION_TTL_HOURS --
+    a student returning after a long break must still resume exactly, not
+    get silently dropped into a fresh session because the TTL lapsed."""
+    try:
+        progress = get_topic_progress(req.student_id, req.topic_id)
+        # Read-only -- a status check must never spend a Gemini call as a
+        # side effect. If Explain hasn't run yet, there's nothing to resume
+        # into anyway (sections comes back empty, same as today).
+        subideas = get_existing_subideas(req.topic_id)
+
+        latest_session = (
+            supabase.table("sessions")
+            .select("session_id")
+            .eq("student_id", req.student_id)
+            .eq("topic_id", req.topic_id)
+            .eq("session_type", "mastery_loop")
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        session_id = latest_session.data[0]["session_id"] if latest_session.data else None
+
+        empty = {
+            "sessionId": session_id,
+            "subideaIndex": progress["subidea_index"],
+            "stage": progress["stage"],
+            "hintsUsed": progress["hints_used"],
+            "totalSubideas": len(subideas),
+            "sections": [],
+            "currentMessages": [],
+        }
+        if not session_id:
+            return empty
+
+        rows = (
+            supabase.table("session_messages")
+            .select("sender, message_text, metadata, timestamp")
+            .eq("session_id", session_id)
+            .order("timestamp")
+            .execute()
+        ).data or []
+
+        # The original per-sub-idea explanation rows, in generation order --
+        # NOT follow-ups, hints, or retries, which share the "Grounded
+        # Explanation"/other tags but aren't the base explanation content.
+        sections = [
+            {
+                "heading": (row.get("metadata") or {}).get("heading"),
+                "body": row["message_text"],
+                "citations": (row.get("metadata") or {}).get("citations") or [],
+                "subideaId": (row.get("metadata") or {}).get("subideaId"),
+                "checkQuestion": (row.get("metadata") or {}).get("checkQuestion"),
+                "solveSteps": (row.get("metadata") or {}).get("solveSteps"),
+            }
+            for row in rows
+            if row["sender"] == "ai"
+            and (row.get("metadata") or {}).get("tag") == "Grounded Explanation"
+            and not (row.get("metadata") or {}).get("isFollowUp")
+        ]
+
+        current_subidea_id = (
+            subideas[progress["subidea_index"]]["subidea_id"]
+            if subideas and progress["subidea_index"] < len(subideas)
+            else None
+        )
+        current_messages = [
+            {"sender": row["sender"], "text": row["message_text"], **(row.get("metadata") or {})}
+            for row in rows
+            if current_subidea_id and (row.get("metadata") or {}).get("subideaId") == current_subidea_id
+        ]
+
+        return {
+            "sessionId": session_id,
+            "subideaIndex": progress["subidea_index"],
+            "stage": progress["stage"],
+            "hintsUsed": progress["hints_used"],
+            "totalSubideas": len(subideas),
+            "sections": sections,
+            "currentMessages": current_messages,
+        }
+    except Exception as exc:
+        print("Topic Resume Error:", exc)
+        raise HTTPException(status_code=500, detail="Unable to load topic progress") from exc
 
 
 class MistakeTagStat(BaseModel):

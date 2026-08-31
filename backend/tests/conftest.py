@@ -236,6 +236,7 @@ def fresh_student_id():
     supabase.table("mastery_checks").delete().eq("student_id", student_id).execute()
     supabase.table("retry_attempts").delete().eq("student_id", student_id).execute()
     supabase.table("student_profiles").delete().eq("student_id", student_id).execute()
+    supabase.table("topic_progress").delete().eq("student_id", student_id).execute()
     # session_messages.session_id FKs to sessions with no ON DELETE CASCADE
     # (same fact tests/e2e/helpers/fixtures.ts's resetTestStudentProgress
     # had to learn the hard way) -- delete messages before their parent
